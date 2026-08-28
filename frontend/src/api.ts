@@ -119,6 +119,8 @@ export type Fork = {
   origin: "fan" | "studio";
   media_kind: string;
   media_path: string;
+  poster_path?: string;
+  duration_ms?: number;
   vta_score: number;
   loop_iterations: number;
   generation_backend: string;

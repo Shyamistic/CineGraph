@@ -387,6 +387,86 @@ def _extract_image_bytes(response: Any) -> bytes | None:
     return None
 
 
+def generate_video(prompt: str, *, image_bytes: bytes | None = None) -> tuple[bytes | None, str]:
+    """Generate a short video clip via Veo. Returns ``(mp4_bytes, route_label)``.
+
+    This is the expensive, slow path (tens of seconds to minutes), so callers
+    gate it behind a flag and fall back to a still. Optionally seeds from an
+    image (image-to-video) so a fork can animate the approved still.
+    """
+    if not settings.vertex_enabled:
+        return None, "unavailable"
+    _, types = _genai()
+    if types is None:
+        return None, "unavailable"
+
+    client = client_for(settings.veo_location)
+    if client is None:
+        return None, "unavailable"
+
+    model = settings.veo_model
+    try:
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "prompt": prompt,
+            "config": types.GenerateVideosConfig(number_of_videos=1),
+        }
+        if image_bytes:
+            kwargs["image"] = types.Image(image_bytes=image_bytes, mime_type="image/png")
+
+        operation = _with_retry(lambda: client.models.generate_videos(**kwargs), what="generate_video")
+
+        import time as _time
+
+        waited = 0.0
+        while not operation.done and waited < settings.veo_poll_timeout:
+            _time.sleep(settings.veo_poll_interval)
+            waited += settings.veo_poll_interval
+            operation = client.operations.get(operation)
+
+        if not operation.done:
+            log.warning("Veo timed out after %ss", waited)
+            return None, "timeout"
+
+        data = _extract_video_bytes(operation, client)
+        if data:
+            return data, f"{model}@{settings.veo_location}"
+        log.warning("Veo finished but no video bytes extracted")
+        return None, "no-output"
+    except Exception as exc:
+        log.warning("Veo generation failed: %s", str(exc)[:160])
+        return None, "unavailable"
+
+
+def _extract_video_bytes(operation: Any, client: Any) -> bytes | None:
+    """Pull MP4 bytes from a completed Veo operation.
+
+    Handles both inline ``video_bytes`` and a GCS ``uri`` that must be fetched.
+    """
+    response = getattr(operation, "response", None) or getattr(operation, "result", None)
+    if response is None:
+        return None
+    videos = getattr(response, "generated_videos", None) or []
+    if not videos:
+        return None
+    video = getattr(videos[0], "video", None)
+    if video is None:
+        return None
+
+    data = getattr(video, "video_bytes", None)
+    if data:
+        return data if isinstance(data, bytes) else base64.b64decode(data)
+
+    uri = getattr(video, "uri", None)
+    if uri:
+        try:
+            downloaded = client.files.download(file=video)
+            return getattr(downloaded, "video_bytes", None) or getattr(video, "video_bytes", None)
+        except Exception as exc:
+            log.warning("Veo GCS download failed: %s", str(exc)[:120])
+    return None
+
+
 def generate_image(prompt: str) -> tuple[bytes | None, str]:
     """Generate a still frame. Returns ``(png_bytes, route_label)``.
 

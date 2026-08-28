@@ -74,6 +74,8 @@ class Settings(BaseSettings):
     veo_model: str = "veo-3.1-fast-generate-001"
     veo_location: str = "us-central1"
     enable_veo: bool = False  # opt-in: video generation is the expensive path
+    veo_poll_interval: float = 12.0
+    veo_poll_timeout: float = 240.0
 
     # --- Adherence loop ---
     vta_threshold: float = 0.72

@@ -136,7 +136,11 @@ export default function WatchBuddy({ prod }: Props) {
         <div className="wb-screen">
           {fork ? (
             <figure className="wb-fork">
-              <img src={fork.media_path} alt={fork.branch_label} />
+              {fork.media_kind === "video" ? (
+                <video src={fork.media_path} poster={fork.poster_path} autoPlay loop muted controls />
+              ) : (
+                <img src={fork.media_path} alt={fork.branch_label} />
+              )}
               <figcaption>
                 <span className="wb-tag">FAN EDIT</span>
                 <b>"{fork.branch_label}"</b>

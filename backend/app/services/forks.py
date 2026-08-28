@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import logging
 
+from pathlib import Path
+
 from app.config import settings
 from app.models import DsgGraph, DsgNode, Fork, Shot
-from app.services import adherence, watermark
+from app.services import adherence, vertex, watermark
 from app.services.embeddings import embed_text
 from app.services.generation import render_storyboard_frame
 from app.telemetry import agent_span, new_id
@@ -127,6 +129,19 @@ def generate_fork(
                 attribution=attribution,
             )
 
+    # Optionally animate the approved still into a short clip. This is the
+    # expensive path, so it is opt-in; the watermarked still remains the poster
+    # and fallback if Veo is unavailable or times out.
+    media_kind = "image"
+    media_path = best_path
+    duration_ms = 0
+    if settings.enable_veo and best_path:
+        clip_path, clip_ms, kind = _animate_fork(
+            production_id, fork_id, prompt, best_path
+        )
+        if clip_path:
+            media_path, duration_ms, media_kind = clip_path, clip_ms, kind
+
     embedding, _ = embed_text(f"{branch_label} {viewer_prompt} {parent_shot.slugline}")
 
     fork = Fork(
@@ -139,8 +154,10 @@ def generate_fork(
         viewer_prompt=viewer_prompt,
         composed_prompt=composed,
         origin="studio" if origin == "studio" else "fan",
-        media_kind="image",
-        media_path=best_path,
+        media_kind=media_kind,
+        media_path=media_path,
+        poster_path=best_path if media_kind == "video" else "",
+        duration_ms=duration_ms,
         vta_score=round(best_vta, 3),
         loop_iterations=iterations,
         generation_backend=best_backend,
@@ -155,6 +172,36 @@ def generate_fork(
     )
     log.info("minted fork %s (%s) vta=%.3f", fork_id, origin, best_vta)
     return fork
+
+
+def _animate_fork(
+    production_id: str, fork_id: str, prompt: str, still_path: str
+) -> tuple[str, int, str]:
+    """Animate the approved still into a short clip via Veo (image-to-video).
+
+    Returns ``(clip_path, duration_ms, media_kind)``. On any failure returns the
+    original still so the fork still has playable media.
+    """
+    with agent_span("fork_animate", "watch_buddy", fork=fork_id):
+        try:
+            seed = Path(still_path).read_bytes() if Path(still_path).exists() else None
+        except Exception:
+            seed = None
+        motion_prompt = (
+            f"{prompt}\n\nAnimate this as one continuous cinematic shot with subtle, "
+            "believable motion (gentle camera push, atmosphere, light). 8 seconds."
+        )
+        data, route = vertex.generate_video(motion_prompt, image_bytes=seed)
+        if not data:
+            return still_path, 0, "image"
+        out = Path(still_path).with_suffix(".mp4")
+        try:
+            out.write_bytes(data)
+            log.info("fork %s animated via %s (%d bytes)", fork_id, route, len(data))
+            return str(out), 8000, "video"
+        except Exception as exc:
+            log.warning("failed to write fork clip: %s", exc)
+            return still_path, 0, "image"
 
 
 def suggest_branches(shot: Shot, count: int = 3) -> list[dict[str, str]]:

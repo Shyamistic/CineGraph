@@ -130,6 +130,7 @@ class Fork(BaseModel):
     origin: Literal["fan", "studio"] = "fan"
     media_kind: Literal["image", "video"] = "image"
     media_path: str = ""
+    poster_path: str = ""           # watermarked still when media is a video
     duration_ms: int = 0
     vta_score: float = 0.0
     loop_iterations: int = 0
