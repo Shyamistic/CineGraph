@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import WatchBuddy from "./WatchBuddy";
 import {
   getHealth,
   getProduction,
@@ -8,6 +9,8 @@ import {
   type Health,
   type Production,
 } from "./api";
+
+type Surface = "watch" | "studio";
 
 const PHASES = [
   { id: "director", label: "01 Director", role: "MAVEN" },
@@ -33,6 +36,7 @@ export default function App() {
   const [query, setQuery] = useState("high-contrast lighting tracking shot");
   const [hits, setHits] = useState<Record<string, unknown>[]>([]);
   const [err, setErr] = useState("");
+  const [surface, setSurface] = useState<Surface>("watch");
 
   useEffect(() => {
     getHealth().then(setHealth).catch(() => setHealth(null));
@@ -91,17 +95,35 @@ export default function App() {
       <header className="top">
         <div>
           <div className="mark">CINEGRAPH</div>
-          <div className="sub">Agentic cinema · deterministic pre-vis · NLE handoff · hyper-localization</div>
+          <div className="sub">
+            {surface === "watch"
+              ? "Watch Buddy · watch along, fork the ending — minted by the CineGraph engine"
+              : "Studio · deterministic pre-vis · NLE handoff · hyper-localization"}
+          </div>
         </div>
-        <div className="pills">
-          <span className={health?.gemini ? "ok" : "dim"}>Gemini {health?.gemini ? "live" : "mock"}</span>
-          <span className={health?.clickhouse.connected ? "ok" : "dim"}>
-            ClickHouse {health?.clickhouse.mode ?? "—"}
-          </span>
-          <span className="dim">{health?.generation ?? "…"} gen</span>
+        <div className="header-right">
+          <div className="surface-toggle">
+            <button className={surface === "watch" ? "on" : ""} onClick={() => setSurface("watch")}>
+              Watch Buddy
+            </button>
+            <button className={surface === "studio" ? "on" : ""} onClick={() => setSurface("studio")}>
+              Studio
+            </button>
+          </div>
+          <div className="pills">
+            <span className={health?.gemini ? "ok" : "dim"}>Gemini {health?.gemini ? "live" : "mock"}</span>
+            <span className={health?.clickhouse.connected ? "ok" : "dim"}>
+              ClickHouse {health?.clickhouse.mode ?? "—"}
+            </span>
+            <span className="dim">{health?.generation ?? "…"} gen</span>
+          </div>
         </div>
       </header>
 
+      {surface === "watch" && <WatchBuddy prod={prod} />}
+
+      {surface === "studio" && (
+        <>
       <section className="rail">
         {PHASES.map((p, i) => (
           <div key={p.id} className={`phase ${i <= phaseIndex ? "on" : ""}`}>
@@ -325,6 +347,8 @@ export default function App() {
           )}
         </section>
       </main>
+        </>
+      )}
     </div>
   );
 }

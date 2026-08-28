@@ -94,5 +94,72 @@ export async function searchAssets(query: string, production_id?: string) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, production_id, limit: 8 }),
   });
-  return r.json() as Promise<{ hits: Record<string, unknown>[]; backend: string }>;
+  return r.json() as Promise<{ hits: Record<string, unknown>[]; backend: string; embedding_source: string }>;
+}
+
+// --- Watch Buddy ---
+
+export type Branch = { label: string; prompt: string };
+
+export type BranchResponse = {
+  shot_id: string;
+  scene_number: number;
+  slugline: string;
+  branches: Branch[];
+};
+
+export type Fork = {
+  fork_id: string;
+  production_id: string;
+  parent_shot_id: string;
+  parent_scene_number: number;
+  title: string;
+  branch_label: string;
+  viewer_prompt: string;
+  origin: "fan" | "studio";
+  media_kind: string;
+  media_path: string;
+  vta_score: number;
+  loop_iterations: number;
+  generation_backend: string;
+  watermarked: boolean;
+  attribution: string;
+  rights_status: string;
+};
+
+export type LineageSummary = {
+  total_forks: number;
+  studio_forks: number;
+  fan_forks: number;
+  watermarked_forks: number;
+  avg_vta: number;
+};
+
+export async function getBranches(productionId: string, shotId?: string): Promise<BranchResponse> {
+  const q = shotId ? `?shot_id=${encodeURIComponent(shotId)}` : "";
+  const r = await fetch(`/api/productions/${productionId}/branches${q}`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function mintFork(body: {
+  production_id: string;
+  shot_id?: string;
+  viewer_prompt: string;
+  branch_label: string;
+  origin?: "fan" | "studio";
+}): Promise<Fork> {
+  const r = await fetch("/api/forks", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...body, max_loop_iters: 2 }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function listForks(productionId?: string) {
+  const q = productionId ? `?production_id=${encodeURIComponent(productionId)}` : "";
+  const r = await fetch(`/api/forks${q}`);
+  return r.json() as Promise<{ forks: Fork[]; lineage: LineageSummary; backend: string }>;
 }
