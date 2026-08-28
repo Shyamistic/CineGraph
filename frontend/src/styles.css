@@ -205,3 +205,11 @@ figcaption em { font-style: normal; color: var(--muted); font-size: 11px; font-f
 @media (max-width: 980px) {
   .wb-stage { grid-template-columns: 1fr; }
 }
+
+.wb-narration {
+  margin: 4px 0 2px; font-size: 14px; color: #eae6da; line-height: 1.5;
+  font-family: "Noto Sans Devanagari", "IBM Plex Sans", system-ui, sans-serif;
+}
+.wb-narration .wb-lang {
+  font-family: "IBM Plex Mono", monospace; font-size: 10px; color: var(--gold); letter-spacing: 0.1em;
+}

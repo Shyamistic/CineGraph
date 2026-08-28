@@ -127,6 +127,9 @@ export type Fork = {
   watermarked: boolean;
   attribution: string;
   rights_status: string;
+  whisper_lang?: string;
+  whisper_text?: string;
+  whisper_audio_path?: string;
 };
 
 export type LineageSummary = {

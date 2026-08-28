@@ -100,7 +100,14 @@ export default function WatchBuddy({ prod }: Props) {
       });
       setFork(minted);
       setBuddyState("excited");
-      setWhisper(`Here's how it ends when "${label}". Adherence ${(minted.vta_score * 100).toFixed(0)}%.`);
+      setWhisper(minted.whisper_text || `Here's how it ends when "${label}".`);
+      // The buddy speaks the ending aloud (Hindi by default).
+      if (minted.whisper_audio_path) {
+        const audio = new Audio(minted.whisper_audio_path);
+        audio.play().catch(() => {
+          /* autoplay may be blocked until user gesture; caption still shows */
+        });
+      }
       const r = await listForks(prod.id);
       setLineage(r.lineage);
     } catch (e) {
@@ -148,6 +155,12 @@ export default function WatchBuddy({ prod }: Props) {
                   adherence {(fork.vta_score * 100).toFixed(0)}% · {fork.loop_iterations} loop
                   {fork.loop_iterations > 1 ? "s" : ""} · {fork.generation_backend}
                 </em>
+                {fork.whisper_text && (
+                  <p className="wb-narration">
+                    🔊 {fork.whisper_text}
+                    {fork.whisper_lang && <span className="wb-lang"> · {fork.whisper_lang.toUpperCase()}</span>}
+                  </p>
+                )}
                 <small>{fork.attribution}</small>
               </figcaption>
             </figure>

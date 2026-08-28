@@ -20,7 +20,7 @@ from pathlib import Path
 
 from app.config import settings
 from app.models import DsgGraph, DsgNode, Fork, Shot
-from app.services import adherence, vertex, watermark
+from app.services import adherence, vertex, watermark, whisper
 from app.services.embeddings import embed_text
 from app.services.generation import render_storyboard_frame
 from app.telemetry import agent_span, new_id
@@ -77,6 +77,7 @@ def generate_fork(
     origin: str = "fan",
     max_iters: int | None = None,
     vta_threshold: float | None = None,
+    whisper_lang: str = "hi",
 ) -> Fork:
     """Mint one alternate-ending fork, scored and watermarked."""
     max_iters = max_iters or settings.max_loop_iters
@@ -142,6 +143,12 @@ def generate_fork(
         if clip_path:
             media_path, duration_ms, media_kind = clip_path, clip_ms, kind
 
+    # The buddy narrates the ending aloud in the viewer's language.
+    with agent_span("fork_narrate", "watch_buddy", fork=fork_id, lang=whisper_lang):
+        whisper_audio, whisper_text = whisper.narrate_fork(
+            production_id, fork_id, branch_label, viewer_prompt, whisper_lang
+        )
+
     embedding, _ = embed_text(f"{branch_label} {viewer_prompt} {parent_shot.slugline}")
 
     fork = Fork(
@@ -169,6 +176,9 @@ def generate_fork(
         dsg=dsg,
         verdicts=best_verdicts,
         embedding=embedding,
+        whisper_lang=whisper_lang,
+        whisper_text=whisper_text,
+        whisper_audio_path=whisper_audio,
     )
     log.info("minted fork %s (%s) vta=%.3f", fork_id, origin, best_vta)
     return fork

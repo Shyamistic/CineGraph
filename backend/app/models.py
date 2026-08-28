@@ -141,6 +141,10 @@ class Fork(BaseModel):
     dsg: DsgGraph = Field(default_factory=DsgGraph)
     verdicts: list[DsgVerdict] = Field(default_factory=list)
     embedding: list[float] = Field(default_factory=list)
+    # Buddy's spoken narration of this ending (Hindi by default).
+    whisper_lang: str = "hi"
+    whisper_text: str = ""
+    whisper_audio_path: str = ""
     created_at: str = ""
 
 
@@ -211,3 +215,4 @@ class ForkRequest(BaseModel):
     branch_label: str = ""                # short tappable label
     origin: Literal["fan", "studio"] = "fan"
     max_loop_iters: int = 2
+    whisper_lang: str = "hi"              # language for the buddy's spoken narration

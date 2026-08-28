@@ -64,7 +64,11 @@ CREATE TABLE IF NOT EXISTS cinegraph.forks
     origin              String,              -- 'fan' | 'studio'
     media_kind          String,              -- 'image' | 'video'
     media_path          String,
+    poster_path         String DEFAULT '',
     duration_ms         UInt32 DEFAULT 0,
+    whisper_lang        String DEFAULT '',
+    whisper_text        String DEFAULT '',
+    whisper_audio_path  String DEFAULT '',
     vta_score           Float32 DEFAULT 0,
     loop_iterations     UInt16  DEFAULT 0,
     generation_backend  String  DEFAULT '',

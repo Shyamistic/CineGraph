@@ -162,11 +162,14 @@ def create_fork(body: ForkRequest):
         branch_label=body.branch_label or body.viewer_prompt[:32],
         origin=body.origin,
         max_iters=body.max_loop_iters,
+        whisper_lang=body.whisper_lang,
     )
     insert_fork(fork)
 
     data = fork.model_dump()
     data["media_path"] = _file_url(fork.media_path)
+    data["poster_path"] = _file_url(fork.poster_path)
+    data["whisper_audio_path"] = _file_url(fork.whisper_audio_path)
     return data
 
 

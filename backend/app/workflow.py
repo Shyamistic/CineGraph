@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from typing import Any
 
 from app.config import settings
@@ -344,6 +345,17 @@ def _run_adherence_loop(
 
 
 async def run_pipeline(prod: Production, body: ProductionCreate) -> None:
+    """Run the (blocking) pipeline off the event loop.
+
+    The pipeline makes synchronous Vertex calls with rate-limit sleeps and retry
+    backoff. Running that directly on the event loop starves the API (health
+    checks and status polls hang). Offloading to a worker thread keeps the
+    server responsive while a production grinds through quota.
+    """
+    await asyncio.to_thread(_run_pipeline_blocking, prod, body)
+
+
+def _run_pipeline_blocking(prod: Production, body: ProductionCreate) -> None:
     set_production_id(prod.id)
     prod.status = "running"
     prod.generation_backend = backend_name()
@@ -384,7 +396,7 @@ async def run_pipeline(prod: Production, body: ProductionCreate) -> None:
                 if index and settings.shot_pacing_seconds:
                     # Gentle pacing: image generation plus multimodal judging is
                     # quota-heavy, and a burst across shots triggers 429s.
-                    await asyncio.sleep(settings.shot_pacing_seconds)
+                    time.sleep(settings.shot_pacing_seconds)
                 with agent_span("closed_loop", "producer", shot=shot.shot_id):
                     shot.dsg = _dsg(
                         {"slugline": shot.slugline, "camera": shot.camera, "action": shot.action},
