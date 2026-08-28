@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<!--
+  Local-dev ClickHouse user config for CineGraph.
+
+  1. Enables the experimental vector-similarity (HNSW) index as a profile
+     default, so it applies to the init.sql DDL that runs before any client
+     session can issue a SET statement.
+  2. Restores network access for the default user. The official image disables
+     it when no password is set, which otherwise blocks the app from connecting.
+     This is for local development only.
+-->
+<clickhouse>
+    <profiles>
+        <default>
+            <allow_experimental_vector_similarity_index>1</allow_experimental_vector_similarity_index>
+        </default>
+    </profiles>
+    <users>
+        <default>
+            <password></password>
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+            <profile>default</profile>
+            <quota>default</quota>
+            <access_management>1</access_management>
+        </default>
+    </users>
+</clickhouse>

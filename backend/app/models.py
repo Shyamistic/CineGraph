@@ -110,6 +110,39 @@ class LocalizationBundle(BaseModel):
     lse_d_estimate: float = 1.2
 
 
+class Fork(BaseModel):
+    """A Watch Buddy alternate-ending fork and its full provenance.
+
+    A fork is a derivative asset. Every field that governs how it may be shown -
+    watermark, attribution, rights status, origin - travels with it so the
+    lineage is auditable and the "never pass a fan fork off as the studio cut"
+    rule is enforceable at the data layer.
+    """
+
+    fork_id: str
+    production_id: str
+    parent_shot_id: str = ""
+    parent_scene_number: int = 0
+    title: str = ""
+    branch_label: str = ""          # e.g. "he lives"
+    viewer_prompt: str = ""         # what the fan asked for
+    composed_prompt: str = ""       # what was actually generated
+    origin: Literal["fan", "studio"] = "fan"
+    media_kind: Literal["image", "video"] = "image"
+    media_path: str = ""
+    duration_ms: int = 0
+    vta_score: float = 0.0
+    loop_iterations: int = 0
+    generation_backend: str = ""
+    watermarked: bool = True
+    attribution: str = ""
+    rights_status: str = "fan-generated-derivative"
+    dsg: DsgGraph = Field(default_factory=DsgGraph)
+    verdicts: list[DsgVerdict] = Field(default_factory=list)
+    embedding: list[float] = Field(default_factory=list)
+    created_at: str = ""
+
+
 class EditorialPackage(BaseModel):
     fcpxml_path: str = ""
     otio_path: str = ""

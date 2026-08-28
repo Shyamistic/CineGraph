@@ -8,7 +8,12 @@ from app.adk_graph import adk_status
 from app.config import settings
 from app.models import AssetSearchQuery, Production, ProductionCreate
 from app.services import adk_runtime, vertex
-from app.services.clickhouse_store import clickhouse_status, search_assets
+from app.services.clickhouse_store import (
+    clickhouse_status,
+    lineage_summary,
+    list_forks,
+    search_assets,
+)
 from app.services.generation import backend_name
 from app.services.embeddings import embed_text
 from app.telemetry import configure_telemetry
@@ -98,6 +103,19 @@ def production(production_id: str):
     if not prod:
         raise HTTPException(404, "Unknown production")
     return public_production(prod)
+
+
+@app.get("/api/forks")
+def forks_list(production_id: str | None = None, limit: int = 50):
+    forks = list_forks(production_id, limit)
+    for fork in forks:
+        if fork.get("media_path"):
+            fork["media_path"] = _file_url(str(fork["media_path"]))
+    return {
+        "forks": forks,
+        "lineage": lineage_summary(production_id),
+        "backend": clickhouse_status()["mode"],
+    }
 
 
 @app.post("/api/assets/search")

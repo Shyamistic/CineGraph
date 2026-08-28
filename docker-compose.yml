@@ -1,11 +1,12 @@
 services:
   clickhouse:
-    image: clickhouse/clickhouse-server:24.8
+    image: clickhouse/clickhouse-server:25.3
     ports:
       - "8123:8123"
       - "9000:9000"
     volumes:
       - ./infra/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./infra/clickhouse/users.d/vector.xml:/etc/clickhouse-server/users.d/vector.xml:ro
       - clickhouse_data:/var/lib/clickhouse
     ulimits:
       nofile:
