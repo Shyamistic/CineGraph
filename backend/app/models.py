@@ -199,3 +199,14 @@ class AssetSearchQuery(BaseModel):
     query: str
     production_id: str | None = None
     limit: int = 12
+
+
+class ForkRequest(BaseModel):
+    """A viewer's alternate-ending request from the Watch Buddy surface."""
+
+    production_id: str
+    shot_id: str | None = None            # which scene to fork; defaults to last
+    viewer_prompt: str                    # "what if he lives?"
+    branch_label: str = ""                # short tappable label
+    origin: Literal["fan", "studio"] = "fan"
+    max_loop_iters: int = 2
