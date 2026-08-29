@@ -231,7 +231,7 @@ def list_forks(production_id: str | None = None, limit: int = 50) -> list[dict[s
                 f"""
                 SELECT fork_id, production_id, parent_shot_id, parent_scene_number,
                        title, branch_label, viewer_prompt, origin, media_kind,
-                       media_path, vta_score, loop_iterations, watermarked,
+                       media_path, poster_path, duration_ms, vta_score, loop_iterations, watermarked,
                        attribution, rights_status, created_at
                 FROM forks
                 {where}

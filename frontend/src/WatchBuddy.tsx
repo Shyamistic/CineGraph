@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Buddy, type BuddyState } from "./Buddy";
 import {
   getBranches,
+  getCastMedia,
   getTimeline,
   listForks,
   mintFork,
@@ -13,6 +14,15 @@ import {
 } from "./api";
 
 type Props = { prod: Production | null };
+type CastConnection = { context: any; player: any; controller: any };
+
+declare global {
+  interface Window {
+    __watchBuddyCastApiAvailable?: boolean;
+    cast?: any;
+    chrome: any;
+  }
+}
 
 export default function WatchBuddy({ prod }: Props) {
   const shots = useMemo(() => prod?.shots ?? [], [prod]);
@@ -31,16 +41,135 @@ export default function WatchBuddy({ prod }: Props) {
   const [captions, setCaptions] = useState(true);
   const [sound, setSound] = useState(true);
   const [castStatus, setCastStatus] = useState("");
+  const [castReady, setCastReady] = useState(false);
+  const [castConnected, setCastConnected] = useState(false);
+  const [castLoaded, setCastLoaded] = useState(false);
+  const [castVerified, setCastVerified] = useState(false);
+  const [castLoading, setCastLoading] = useState(false);
   const [err, setErr] = useState("");
   const timer = useRef<number | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const forkVideoRef = useRef<HTMLVideoElement | null>(null);
   const [audioDuration, setAudioDuration] = useState(0);
+  const castRef = useRef<CastConnection | null>(null);
+  const prodRef = useRef(prod);
+  const playbackRef = useRef({ sceneIdx, playing, elapsed, fork });
+  const lastCastPlayerState = useRef("");
+  const lastRemoteTime = useRef(0);
+  const remoteWasPlaying = useRef(false);
+  const hadCastConnection = useRef(false);
+  const castLoadSequence = useRef(0);
+  const castLoadQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const onReachClimaxRef = useRef<(() => void) | null>(null);
 
   const atClimax = shots.length > 0 && sceneIdx >= shots.length - 1;
   const current = shots[sceneIdx];
   const currentTiming = timeline.find((item) => item.shot_id === current?.shot_id);
   const duration = Math.max(2.4, audioDuration || ((currentTiming?.end_ms ?? 4000) - (currentTiming?.start_ms ?? 0)) / 1000);
   const progress = Math.min(100, (elapsed / duration) * 100);
+
+  useEffect(() => {
+    prodRef.current = prod;
+    playbackRef.current = { sceneIdx, playing, elapsed, fork };
+  }, [prod, sceneIdx, playing, elapsed, fork]);
+
+  useEffect(() => {
+    const onCastReady = (event: Event) => {
+      if ((event as CustomEvent<boolean>).detail) setCastReady(true);
+    };
+    window.addEventListener("watch-buddy-cast-ready", onCastReady);
+    if (window.__watchBuddyCastApiAvailable && window.cast?.framework) setCastReady(true);
+    return () => window.removeEventListener("watch-buddy-cast-ready", onCastReady);
+  }, []);
+
+  useEffect(() => {
+    if (!castReady || !window.cast?.framework || !window.chrome?.cast) return;
+    const framework = window.cast.framework;
+    const context = framework.CastContext.getInstance();
+    const player = new framework.RemotePlayer();
+    const controller = new framework.RemotePlayerController(player);
+    castRef.current = { context, player, controller };
+    context.setOptions({
+      receiverApplicationId: window.chrome.cast.media.DEFAULT_MEDIA_RECEIVER_APP_ID,
+      autoJoinPolicy: window.chrome.cast.AutoJoinPolicy.ORIGIN_SCOPED,
+    });
+
+    const syncRemoteState = () => {
+      const connected = Boolean(player.isConnected);
+      setCastConnected(connected);
+      if (!connected) {
+        setCastLoaded(false);
+        setCastVerified(false);
+        if (!hadCastConnection.current) return;
+        hadCastConnection.current = false;
+        const resumeAt = lastRemoteTime.current;
+        if (playbackRef.current.fork && forkVideoRef.current) {
+          forkVideoRef.current.currentTime = Math.min(
+            resumeAt,
+            Number.isFinite(forkVideoRef.current.duration) ? forkVideoRef.current.duration : resumeAt,
+          );
+        } else if (audioRef.current) {
+          audioRef.current.currentTime = Math.min(
+            resumeAt,
+            Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : resumeAt,
+          );
+        }
+        setElapsed(resumeAt);
+        setPlaying(remoteWasPlaying.current);
+        setCastStatus(
+          remoteWasPlaying.current
+            ? "TV disconnected. Continuing this CineGraph scene in the Watch Room."
+            : "TV disconnected. This CineGraph scene is paused in the Watch Room.",
+        );
+        return;
+      }
+      hadCastConnection.current = true;
+      if (player.isMediaLoaded) {
+        setCastLoaded(true);
+        if (Number.isFinite(player.currentTime)) {
+          lastRemoteTime.current = Math.max(0, player.currentTime);
+          setElapsed(lastRemoteTime.current);
+        }
+        if (player.playerState === "PLAYING") {
+          remoteWasPlaying.current = true;
+          setPlaying(true);
+        }
+        if (player.playerState === "PAUSED") {
+          remoteWasPlaying.current = false;
+          setPlaying(false);
+        }
+      }
+    };
+    const onPlayerStateChanged = () => {
+      const state = player.playerState || "";
+      const previous = lastCastPlayerState.current;
+      lastCastPlayerState.current = state;
+      syncRemoteState();
+      if (previous === "PLAYING" && state === "IDLE" && (!player.idleReason || player.idleReason === "FINISHED")) {
+        handleCastMediaFinished();
+      }
+    };
+    const onSessionChanged = () => {
+      syncRemoteState();
+    };
+    const remoteEvents = framework.RemotePlayerEventType || {};
+    const contextEvents = framework.CastContextEventType || {};
+    controller.addEventListener(remoteEvents.IS_CONNECTED_CHANGED || "IS_CONNECTED_CHANGED", syncRemoteState);
+    controller.addEventListener(remoteEvents.IS_MEDIA_LOADED_CHANGED || "IS_MEDIA_LOADED_CHANGED", syncRemoteState);
+    controller.addEventListener(remoteEvents.CURRENT_TIME_CHANGED || "CURRENT_TIME_CHANGED", syncRemoteState);
+    controller.addEventListener(remoteEvents.PLAYER_STATE_CHANGED || "PLAYER_STATE_CHANGED", onPlayerStateChanged);
+    context.addEventListener(contextEvents.SESSION_STATE_CHANGED || "SESSION_STATE_CHANGED", onSessionChanged);
+    syncRemoteState();
+
+    return () => {
+      controller.removeEventListener(remoteEvents.IS_CONNECTED_CHANGED || "IS_CONNECTED_CHANGED", syncRemoteState);
+      controller.removeEventListener(remoteEvents.IS_MEDIA_LOADED_CHANGED || "IS_MEDIA_LOADED_CHANGED", syncRemoteState);
+      controller.removeEventListener(remoteEvents.CURRENT_TIME_CHANGED || "CURRENT_TIME_CHANGED", syncRemoteState);
+      controller.removeEventListener(remoteEvents.PLAYER_STATE_CHANGED || "PLAYER_STATE_CHANGED", onPlayerStateChanged);
+      context.removeEventListener(contextEvents.SESSION_STATE_CHANGED || "SESSION_STATE_CHANGED", onSessionChanged);
+      castRef.current = null;
+    };
+  }, [castReady]);
 
   useEffect(() => {
     setSceneIdx(0);
@@ -51,13 +180,14 @@ export default function WatchBuddy({ prod }: Props) {
     setWhisper("");
     setBuddyState("idle");
     setTimeline([]);
+    setCastVerified(false);
     if (!prod?.id) return;
     getTimeline(prod.id).then((r) => setTimeline(r.items)).catch(() => {});
     listForks(prod.id).then((r) => setLineage(r.lineage)).catch(() => {});
   }, [prod?.id]);
 
   useEffect(() => {
-    if (!playing || shots.length === 0 || fork || (sound && currentTiming?.audio_path)) return;
+    if (!playing || castConnected || shots.length === 0 || fork || (sound && currentTiming?.audio_path)) return;
     timer.current = window.setInterval(() => {
       setElapsed((value) => {
         const next = value + 0.1;
@@ -74,7 +204,7 @@ export default function WatchBuddy({ prod }: Props) {
     return () => {
       if (timer.current) window.clearInterval(timer.current);
     };
-  }, [playing, sceneIdx, shots.length, duration, atClimax, fork, sound, currentTiming?.audio_path]);
+  }, [playing, castConnected, shots.length, duration, atClimax, fork, sound, currentTiming?.audio_path]);
 
   useEffect(() => {
     setAudioDuration(0);
@@ -82,14 +212,108 @@ export default function WatchBuddy({ prod }: Props) {
   }, [sceneIdx, currentTiming?.audio_path]);
 
   useEffect(() => {
-    if (!sound || !currentTiming?.audio_path || !audioRef.current) return;
+    if (castConnected || !sound || !currentTiming?.audio_path || !audioRef.current) return;
     const audio = audioRef.current;
     if (playing) {
       audio.play().catch(() => setSound(false));
     } else {
       audio.pause();
     }
-  }, [playing, sound, currentTiming?.audio_path]);
+  }, [playing, castConnected, sound, currentTiming?.audio_path]);
+
+  useEffect(() => {
+    const video = forkVideoRef.current;
+    if (!video) return;
+    if (castConnected || !playing) {
+      video.pause();
+    } else {
+      video.play().catch(() => {});
+    }
+  }, [castConnected, playing, fork?.fork_id]);
+
+  function loadCastMedia(shotId?: string, forkId?: string, autoplay = true, startAt = 0): Promise<boolean> {
+    const requestSequence = ++castLoadSequence.current;
+    setCastVerified(false);
+    const queuedLoad = castLoadQueue.current.then(
+      () => performCastMediaLoad(requestSequence, shotId, forkId, autoplay, startAt),
+      () => performCastMediaLoad(requestSequence, shotId, forkId, autoplay, startAt),
+    );
+    castLoadQueue.current = queuedLoad;
+    return queuedLoad;
+  }
+
+  async function performCastMediaLoad(requestSequence: number, shotId?: string, forkId?: string, autoplay = true, startAt = 0) {
+    const connection = castRef.current;
+    const production = prodRef.current;
+    if (!connection || !production?.id) return false;
+    const session = connection.context.getCastSession();
+    if (!session) return false;
+    setCastLoading(true);
+    setCastStatus("Loading CineGraph media on Google TV…");
+    try {
+      const item = await getCastMedia(production.id, shotId, forkId);
+      if (requestSequence !== castLoadSequence.current) return false;
+      const mediaInfo = new window.chrome.cast.media.MediaInfo(
+        new URL(item.media_url, window.location.origin).toString(),
+        item.content_type,
+      );
+      const metadata = new window.chrome.cast.media.GenericMediaMetadata();
+      metadata.title = item.title;
+      metadata.subtitle = `${item.source_label} · Scene ${String(item.scene_number).padStart(2, "0")}`;
+      metadata.artist = item.attribution;
+      if (item.visual_url) {
+        metadata.images = [new window.chrome.cast.Image(new URL(item.visual_url, window.location.origin).toString())];
+      }
+      mediaInfo.metadata = metadata;
+      if (item.duration_ms > 0) mediaInfo.duration = item.duration_ms / 1000;
+      if (item.media_kind !== "image") {
+        mediaInfo.streamType = window.chrome.cast.media.StreamType.BUFFERED;
+      }
+      const request = new window.chrome.cast.media.LoadRequest(mediaInfo);
+      request.autoplay = autoplay;
+      request.currentTime = Math.max(0, startAt);
+      const loaded = await session.loadMedia(request);
+      if (loaded === false) throw new Error("The receiver rejected this CineGraph media item.");
+      if (requestSequence !== castLoadSequence.current) return false;
+      setCastLoaded(true);
+      setCastVerified(true);
+      setCastConnected(true);
+      setPlaying(autoplay);
+      setCastStatus(`${item.source_label} · ${autoplay ? "playing" : "paused"} on Google TV. CineGraph media only; third-party apps are not inspected.`);
+      return true;
+    } catch (error) {
+      setCastLoaded(false);
+      setCastVerified(false);
+      setCastStatus(error instanceof Error ? error.message : "Unable to load CineGraph media on Google TV.");
+      return false;
+    } finally {
+      if (requestSequence === castLoadSequence.current) setCastLoading(false);
+    }
+  }
+
+  function handleCastMediaFinished() {
+    const production = prodRef.current;
+    const state = playbackRef.current;
+    if (!production || state.fork) {
+      setPlaying(false);
+      setCastLoaded(false);
+      setCastVerified(false);
+      return;
+    }
+    const nextIndex = state.sceneIdx + 1;
+    if (nextIndex < production.shots.length) {
+      const nextShot = production.shots[nextIndex];
+      setSceneIdx(nextIndex);
+      setElapsed(0);
+      setPlaying(true);
+      void loadCastMedia(nextShot.shot_id, undefined, true, 0);
+    } else {
+      setPlaying(false);
+      setCastLoaded(false);
+      setCastVerified(false);
+      onReachClimaxRef.current?.();
+    }
+  }
 
   async function onReachClimax() {
     if (!prod?.id || !current || showBranches) return;
@@ -122,6 +346,7 @@ export default function WatchBuddy({ prod }: Props) {
         origin: "fan",
       });
       setFork(minted);
+      setPlaying(true);
       setBuddyState("excited");
       setWhisper(minted.whisper_text || `Here is the story when you choose ${label}.`);
       if (minted.whisper_audio_path && sound) {
@@ -133,11 +358,24 @@ export default function WatchBuddy({ prod }: Props) {
       }
       const r = await listForks(prod.id);
       setLineage(r.lineage);
+      if (castConnected) void loadCastMedia(undefined, minted.fork_id, true, 0);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Unable to create that branch.");
       setBuddyState("idle");
     } finally {
       setMinting(false);
+    }
+  }
+
+  function selectScene(index: number) {
+    const nextIndex = Math.max(0, Math.min(shots.length - 1, index));
+    const autoplay = castConnected && playing;
+    setFork(null);
+    setSceneIdx(nextIndex);
+    setElapsed(0);
+    setPlaying(autoplay);
+    if (castConnected && shots[nextIndex]) {
+      void loadCastMedia(shots[nextIndex].shot_id, undefined, autoplay, 0);
     }
   }
 
@@ -148,9 +386,14 @@ export default function WatchBuddy({ prod }: Props) {
     setPlaying(true);
     setBuddyState("idle");
     setWhisper("I am right here. I will chime in when the story turns.");
+    if (castConnected && prod?.shots[0]) void loadCastMedia(prod.shots[0].shot_id, undefined, true, 0);
   }
 
   function togglePlayback() {
+    if (castConnected && castLoaded && castRef.current) {
+      castRef.current.controller.playOrPause();
+      return;
+    }
     if (playing) {
       setPlaying(false);
     } else if (fork) {
@@ -170,8 +413,30 @@ export default function WatchBuddy({ prod }: Props) {
   }
 
   function showTvRoadmap() {
-    setCastStatus("TV handoff is a roadmap preview. This build does not send or inspect media on another app or device.");
+    if (!castReady) {
+      setCastStatus("TV handoff is a roadmap preview until the Cast sender is available. CineGraph never inspects third-party apps.");
+      return;
+    }
+    const context = castRef.current?.context;
+    if (!context) return;
+    setCastStatus("Choose a Google TV receiver for this CineGraph story.");
+    void (async () => {
+      try {
+        if (!context.getCastSession()) await context.requestSession();
+        const state = playbackRef.current;
+        await loadCastMedia(
+          state.fork?.fork_id ? undefined : prod?.shots[state.sceneIdx]?.shot_id,
+          state.fork?.fork_id,
+          state.playing,
+          state.elapsed,
+        );
+      } catch (error) {
+        setCastStatus(error instanceof Error ? error.message : "Google TV connection was cancelled.");
+      }
+    })();
   }
+
+  onReachClimaxRef.current = onReachClimax;
 
   if (!prod || shots.length === 0) {
     return (
@@ -193,7 +458,9 @@ export default function WatchBuddy({ prod }: Props) {
           <p className="watch-sub">{shots.length} scenes · interactive story · {prod.generation_backend}</p>
         </div>
         <div className="watch-actions">
-          <button className="soft-button" onClick={showTvRoadmap}>TV roadmap</button>
+          <button className="soft-button" onClick={showTvRoadmap} disabled={castLoading}>
+            {castConnected ? (castVerified ? "Google TV media verified" : "Google TV connected") : castReady ? "Continue on Google TV" : "TV roadmap"}
+          </button>
           <button className={`soft-button ${captions ? "selected" : ""}`} onClick={() => setCaptions((value) => !value)}>
             Captions {captions ? "on" : "off"}
           </button>
@@ -206,7 +473,7 @@ export default function WatchBuddy({ prod }: Props) {
             {fork ? (
               <figure className="fork-media">
                 {fork.media_kind === "video" ? (
-                  <video src={fork.media_path} poster={fork.poster_path} autoPlay loop muted controls />
+                  <video ref={forkVideoRef} src={fork.media_path} poster={fork.poster_path} autoPlay={!castConnected} loop={!castConnected} muted controls />
                 ) : (
                   <img src={fork.media_path} alt={fork.branch_label} />
                 )}
@@ -231,8 +498,8 @@ export default function WatchBuddy({ prod }: Props) {
             <button className="play-button" onClick={togglePlayback} aria-label={playing ? "Pause watching" : "Play watching"}>
               {playing ? "Pause" : elapsed > 0 ? "Resume" : "Play story"}
             </button>
-            <button className="control-button" onClick={() => { setPlaying(false); setSceneIdx((index) => Math.max(0, index - 1)); }}>Previous</button>
-            <button className="control-button" onClick={() => { setPlaying(false); setSceneIdx((index) => Math.min(shots.length - 1, index + 1)); }}>Next scene</button>
+            <button className="control-button" onClick={() => selectScene(Math.max(0, sceneIdx - 1))}>Previous</button>
+            <button className="control-button" onClick={() => selectScene(Math.min(shots.length - 1, sceneIdx + 1))}>Next scene</button>
             <button className={`control-button ${sound ? "active-control" : ""}`} onClick={() => setSound((value) => !value)}>
               Voice {sound ? "on" : "off"}
             </button>
@@ -290,7 +557,7 @@ export default function WatchBuddy({ prod }: Props) {
             <button
               key={shot.shot_id}
               className={index === sceneIdx && !fork ? "current-scene" : index < sceneIdx || fork ? "seen-scene" : ""}
-              onClick={() => { setFork(null); setSceneIdx(index); setElapsed(0); setPlaying(false); }}
+              onClick={() => selectScene(index)}
               title={shot.slugline}
             >
               <span>{String(shot.scene_number).padStart(2, "0")}</span>

@@ -9,6 +9,7 @@
     <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
     <script>
       window.__onGCastApiAvailable = function (isAvailable) {
+        window.__watchBuddyCastApiAvailable = isAvailable;
         window.dispatchEvent(new CustomEvent("watch-buddy-cast-ready", { detail: isAvailable }));
       };
     </script>

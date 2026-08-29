@@ -1,0 +1,1 @@
+- [Cast capability trust](cast-capability-trust.md) — promote TV media loading only from a successful browser receiver load; backend health stays roadmap-only.

@@ -6,7 +6,13 @@ from fastapi.staticfiles import StaticFiles
 
 from app.adk_graph import adk_status
 from app.config import settings
-from app.models import AssetSearchQuery, ForkRequest, Production, ProductionCreate, Shot
+from app.models import (
+    AssetSearchQuery,
+    ForkRequest,
+    Production,
+    ProductionCreate,
+    Shot,
+)
 from app.services import adk_runtime, vertex
 from app.services.clickhouse_store import (
     clickhouse_status,
@@ -36,7 +42,6 @@ app.add_middleware(
 media_root = settings.cinegraph_data_dir.resolve()
 media_root.mkdir(parents=True, exist_ok=True)
 app.mount("/files", StaticFiles(directory=str(media_root)), name="files")
-
 
 @app.get("/api/health")
 def health():
@@ -144,6 +149,105 @@ def production_timeline(production_id: str):
         "duration_ms": items[-1]["end_ms"] if items else 0,
         "items": items,
     }
+
+
+def _cast_asset_url(path: str, label: str) -> str:
+    """Return a URL only for an existing CineGraph-owned media file."""
+    if not path:
+        raise HTTPException(404, f"No {label} is available for Cast")
+    try:
+        relative = Path(path).resolve().relative_to(media_root)
+    except (OSError, ValueError):
+        raise HTTPException(403, "Cast can load CineGraph-owned media only") from None
+    resolved = media_root / relative
+    if not resolved.is_file():
+        raise HTTPException(404, f"No {label} is available for Cast")
+    return "/files/" + relative.as_posix()
+
+
+def _cast_content_type(path: str) -> str:
+    suffix = Path(path).suffix.lower()
+    return {
+        ".aac": "audio/aac",
+        ".flac": "audio/flac",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".m4a": "audio/mp4",
+        ".mp3": "audio/mpeg",
+        ".mp4": "video/mp4",
+        ".ogg": "audio/ogg",
+        ".png": "image/png",
+        ".wav": "audio/wav",
+        ".webm": "video/webm",
+    }.get(suffix, "application/octet-stream")
+
+
+def _cast_media_item(production_id: str, shot_id: str | None, fork_id: str | None) -> dict:
+    """Build a first-party media item for the Cast default media receiver.
+
+    Canonical scenes use their narration audio as the playable stream when it
+    exists, with the storyboard frame attached as metadata. This mirrors the
+    Watch Room's visual-plus-narration contract. Fan branches use their video
+    when available and remain explicitly attributed.
+    """
+    prod = get_production(production_id)
+    if not prod:
+        raise HTTPException(404, "Unknown production")
+
+    if fork_id:
+        fork = next((item for item in list_forks(production_id, 100) if item.get("fork_id") == fork_id), None)
+        if not fork:
+            raise HTTPException(404, "Unknown fan branch for this production")
+        media_path = str(fork.get("media_path") or "")
+        media_kind = str(fork.get("media_kind") or "image")
+        visual_path = str(fork.get("poster_path") or (media_path if media_kind == "image" else ""))
+        media_url = _cast_asset_url(media_path, "fan branch media")
+        visual_url = _cast_asset_url(visual_path, "fan branch artwork") if visual_path else ""
+        return {
+            "production_id": production_id,
+            "source": "fan-branch",
+            "source_label": f"FAN BRANCH · {fork.get('branch_label') or 'alternate ending'}",
+            "title": str(fork.get("title") or prod.title),
+            "media_url": media_url,
+            "visual_url": visual_url,
+            "content_type": _cast_content_type(media_path),
+            "media_kind": media_kind,
+            "duration_ms": int(fork.get("duration_ms") or (4000 if media_kind == "image" else 0)),
+            "scene_number": int(fork.get("parent_scene_number") or 0),
+            "attribution": str(fork.get("attribution") or "Fan-generated with CineGraph. Not an official studio cut."),
+            "rights_status": str(fork.get("rights_status") or "fan-generated-derivative"),
+        }
+
+    shot = _resolve_shot(prod, shot_id)
+    timing = next((line for line in (prod.localization.lines if prod.localization else []) if line.shot_id == shot.shot_id), None)
+    visual_url = _cast_asset_url(shot.media_path, "canonical scene media")
+    playable_path = timing.audio_path if timing and timing.audio_path else shot.media_path
+    media_url = _cast_asset_url(playable_path, "canonical scene media")
+    start_ms = timing.start_ms if timing else 0
+    end_ms = timing.end_ms if timing else 4000
+    return {
+        "production_id": production_id,
+        "shot_id": shot.shot_id,
+        "source": "canonical",
+        "source_label": "CINEGRAPH CANONICAL",
+        "title": prod.title,
+        "media_url": media_url,
+        "visual_url": visual_url,
+        "content_type": _cast_content_type(playable_path),
+        "media_kind": "audio" if playable_path != shot.media_path else "image",
+        "duration_ms": max(1, end_ms - start_ms),
+        "scene_number": shot.scene_number,
+        "attribution": "Official CineGraph production media.",
+        "rights_status": "cinegraph-owned",
+    }
+
+
+@app.get("/api/cast/media")
+def cast_media(production_id: str, shot_id: str | None = None, fork_id: str | None = None):
+    """Resolve one CineGraph scene or fan branch for the Cast sender."""
+    if shot_id and fork_id:
+        raise HTTPException(400, "Choose a canonical scene or a fan branch, not both")
+    return _cast_media_item(production_id, shot_id, fork_id)
 
 
 @app.get("/api/forks")

@@ -119,9 +119,34 @@ export type TimelineItem = {
   audio_path: string;
 };
 
+export type CastMedia = {
+  production_id: string;
+  shot_id?: string;
+  source: "canonical" | "fan-branch";
+  source_label: string;
+  title: string;
+  media_url: string;
+  visual_url: string;
+  content_type: string;
+  media_kind: "audio" | "image" | "video" | string;
+  duration_ms: number;
+  scene_number: number;
+  attribution: string;
+  rights_status: string;
+};
+
 export async function getTimeline(id: string): Promise<{ production_id: string; duration_ms: number; items: TimelineItem[] }> {
   const r = await fetch(`/api/productions/${id}/timeline`);
   if (!r.ok) throw new Error("Unable to load watch timeline");
+  return r.json();
+}
+
+export async function getCastMedia(productionId: string, shotId?: string, forkId?: string): Promise<CastMedia> {
+  const params = new URLSearchParams({ production_id: productionId });
+  if (shotId) params.set("shot_id", shotId);
+  if (forkId) params.set("fork_id", forkId);
+  const r = await fetch(`/api/cast/media?${params.toString()}`);
+  if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
 
