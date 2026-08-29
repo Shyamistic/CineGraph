@@ -4,6 +4,13 @@ export type Health = {
   generation: string;
   clickhouse: { connected: boolean; mode: string; host: string };
   otel: string;
+  capabilities?: {
+    watch_buddy: boolean;
+    timeline_sync: boolean;
+    cast_sender: "roadmap-preview" | "media-loading";
+    android_tv_receiver: string;
+    third_party_app_capture: boolean;
+  };
 };
 
 export type Shot = {
@@ -42,7 +49,14 @@ export type Production = {
     target_lang: string;
     mos_estimate: number;
     lse_d_estimate: number;
-    lines: { shot_id: string; source: string; translated: string; audio_path: string }[];
+    lines: {
+      shot_id: string;
+      source: string;
+      translated: string;
+      start_ms: number;
+      end_ms: number;
+      audio_path: string;
+    }[];
   } | null;
   editorial: { fcpxml_path: string; otio_path: string; bins: string[]; sequence_name: string } | null;
   traces: {
@@ -67,6 +81,12 @@ export async function getSample() {
   return r.json() as Promise<{ title: string; script: string }>;
 }
 
+export async function listProductions(): Promise<Production[]> {
+  const r = await fetch("/api/productions");
+  if (!r.ok) throw new Error("Unable to load productions");
+  return r.json();
+}
+
 export async function startProduction(body: {
   title: string;
   script: string;
@@ -85,6 +105,23 @@ export async function startProduction(body: {
 export async function getProduction(id: string): Promise<Production> {
   const r = await fetch(`/api/productions/${id}`);
   if (!r.ok) throw new Error("missing production");
+  return r.json();
+}
+
+export type TimelineItem = {
+  shot_id: string;
+  scene_number: number;
+  slugline: string;
+  action: string;
+  start_ms: number;
+  end_ms: number;
+  narration: string;
+  audio_path: string;
+};
+
+export async function getTimeline(id: string): Promise<{ production_id: string; duration_ms: number; items: TimelineItem[] }> {
+  const r = await fetch(`/api/productions/${id}/timeline`);
+  if (!r.ok) throw new Error("Unable to load watch timeline");
   return r.json();
 }
 

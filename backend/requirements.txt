@@ -10,7 +10,8 @@ clickhouse-connect>=0.8.0
 # Credentials (gcloud auth application-default login) - no API key required.
 google-genai>=1.0.0
 google-adk>=1.0.0
-google-cloud-aiplatform>=1.101.0
+# Vertex access is provided through google-genai. The legacy
+# google-cloud-aiplatform package is not required by the runtime.
 
 # OpenTelemetry -> Grafana Tempo. Pinned as a set: google-adk constrains the
 # SDK, and a mismatched exporter breaks trace export at import time.

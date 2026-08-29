@@ -56,6 +56,13 @@ def health():
             "reason": vertex_status.reason,
         },
         "adk": {**adk_status(), **adk_runtime.adk_runtime_status()},
+        "capabilities": {
+            "watch_buddy": True,
+            "timeline_sync": True,
+            "cast_sender": "roadmap-preview",
+            "android_tv_receiver": "roadmap",
+            "third_party_app_capture": False,
+        },
     }
 
 
@@ -105,6 +112,38 @@ def production(production_id: str):
     if not prod:
         raise HTTPException(404, "Unknown production")
     return public_production(prod)
+
+
+@app.get("/api/productions/{production_id}/timeline")
+def production_timeline(production_id: str):
+    """Return one timing contract for visuals, narration, and captions."""
+    prod = get_production(production_id)
+    if not prod:
+        raise HTTPException(404, "Unknown production")
+
+    lines = {line.shot_id: line for line in (prod.localization.lines if prod.localization else [])}
+    items = []
+    for index, shot in enumerate(prod.shots):
+        line = lines.get(shot.shot_id)
+        start_ms = line.start_ms if line else index * 4000
+        end_ms = line.end_ms if line else start_ms + 4000
+        items.append(
+            {
+                "shot_id": shot.shot_id,
+                "scene_number": shot.scene_number,
+                "slugline": shot.slugline,
+                "action": shot.action,
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "narration": line.translated if line else shot.dialogue or shot.action,
+                "audio_path": _file_url(line.audio_path) if line else "",
+            }
+        )
+    return {
+        "production_id": production_id,
+        "duration_ms": items[-1]["end_ms"] if items else 0,
+        "items": items,
+    }
 
 
 @app.get("/api/forks")
