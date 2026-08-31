@@ -1,0 +1,30 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "C5wX00yCF8j88ucKQfijQ"
+uri = "file://research/notes.md"
+type = "text"
+title = "Research Notes: Winning the Blockbuster Hackathon"
+description = "Research plan and running findings log for the competitive deep-dive, updated as research progresses."
+logical_id = "a34d1ccc-a577-4bc0-8772-656b87d48317"
+content_hash = "sha256:f070783bf4a26a6597882d26a831dc1d3ae4441dbd895c5be5a56ee8d497e1e0"
+size = 2356
+mtime_ms = 1788178401431
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:55e89338-aab3-4b35-944e-745fa890acf5/a34d1ccc-a577-4bc0-8772-656b87d48317/f933b843-3310-47a4-9ecc-652198cb0ba2"
+storage_version_token = "1788178413733417"
+content_type = "text/markdown"
+
+[[outputs]]
+id = "ehQ9YqPdWrBoEZcJFQDJf"
+uri = "file://research/winning-plan.md"
+type = "text"
+title = "Watch Buddy: The Winning Plan"
+description = "Research-backed battle plan: competitive field, track recommendation, story/niche, 9-day execution schedule, and demo recipe — with cited sources."
+logical_id = "bd884899-7e9a-4a02-8b87-0766c5961b56"
+content_hash = "sha256:8a91f16c3ce7305ba88be74f097ac490843c2d9fd10471a80ea3716a067f7124"
+size = 13393
+mtime_ms = 1788178874231
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:55e89338-aab3-4b35-944e-745fa890acf5/bd884899-7e9a-4a02-8b87-0766c5961b56/904105d2-1be6-4ba8-b2e0-510c7d958815"
+storage_version_token = "1788178902699801"
+content_type = "text/markdown"
