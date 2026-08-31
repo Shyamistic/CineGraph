@@ -17,7 +17,7 @@ from app.models import (
     Shot,
 )
 from app.services import adherence, adk_runtime
-from app.services.clickhouse_store import insert_shot, upsert_production
+from app.services.clickhouse_store import insert_shot, load_productions, upsert_production
 from app.services.embeddings import embed_text
 from app.services.gemini import generate_json, generate_text
 from app.services.generation import backend_name, render_storyboard_frame
@@ -71,14 +71,38 @@ SHOT_LIST_SCHEMA: dict[str, Any] = {
 }
 
 _jobs: dict[str, Production] = {}
+_jobs_hydrated = False
+
+
+def _ensure_hydrated() -> None:
+    global _jobs_hydrated
+    if _jobs_hydrated:
+        return
+    for production in load_productions():
+        if production.status in {"queued", "running"}:
+            production.status = "failed"
+            production.phase = "interrupted"
+            production.error = "The production worker restarted before this run finished. Review the saved work and start a new run."
+            production.events.append(
+                ProductionEvent(
+                    phase="interrupted",
+                    message=production.error,
+                    progress=production.progress,
+                )
+            )
+            upsert_production(production)
+        _jobs[production.id] = production
+    _jobs_hydrated = True
 
 
 def get_production(pid: str) -> Production | None:
+    _ensure_hydrated()
     return _jobs.get(pid)
 
 
 def list_productions() -> list[Production]:
-    return list(_jobs.values())
+    _ensure_hydrated()
+    return sorted(_jobs.values(), key=lambda production: production.id, reverse=True)
 
 
 def _event(prod: Production, phase: str, message: str, progress: float) -> None:
@@ -458,6 +482,7 @@ def _run_pipeline_blocking(prod: Production, body: ProductionCreate) -> None:
 
 
 async def start_production(body: ProductionCreate) -> Production:
+    _ensure_hydrated()
     prod = Production(
         id=new_id("cg_"),
         title=body.title,
@@ -466,5 +491,6 @@ async def start_production(body: ProductionCreate) -> Production:
         generation_backend=backend_name(),
     )
     _jobs[prod.id] = prod
+    upsert_production(prod)
     asyncio.create_task(run_pipeline(prod, body))
     return prod

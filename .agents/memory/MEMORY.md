@@ -1,1 +1,2 @@
 - [Cast capability trust](cast-capability-trust.md) — promote TV media loading only from a successful browser receiver load; backend health stays roadmap-only.
+- [Production snapshot durability](production-snapshot-durability.md) — keep local atomic production snapshots alongside ClickHouse so completed cuts survive worker restarts.

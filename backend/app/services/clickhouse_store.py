@@ -9,8 +9,10 @@ runs, but the mode is always reported truthfully.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from app.config import settings
@@ -86,6 +88,15 @@ def clickhouse_status() -> dict[str, Any]:
 
 def upsert_production(prod: Production) -> None:
     _memory_productions[prod.id] = prod.model_dump()
+    snapshot_dir = settings.cinegraph_data_dir.resolve() / "productions"
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_path = snapshot_dir / f"{prod.id}.json"
+    temporary_path = snapshot_path.with_suffix(".json.tmp")
+    try:
+        temporary_path.write_text(prod.model_dump_json(indent=2), encoding="utf-8")
+        temporary_path.replace(snapshot_path)
+    except OSError as exc:
+        log.warning("production snapshot failed: %s", str(exc)[:120])
     client = _try_client()
     if not client:
         return
@@ -105,6 +116,37 @@ def upsert_production(prod: Production) -> None:
         )
     except Exception as exc:
         log.warning("production upsert failed: %s", str(exc)[:120])
+
+
+def load_productions() -> list[Production]:
+    """Restore durable production snapshots, preferring the shared ledger."""
+    restored: dict[str, Production] = {}
+    client = _try_client()
+    if client:
+        try:
+            result = client.query(
+                "SELECT payload_json FROM productions ORDER BY updated_at DESC"
+            )
+            for row in result.result_rows:
+                production = Production.model_validate_json(row[0])
+                restored.setdefault(production.id, production)
+        except Exception as exc:
+            log.warning("production restore from ClickHouse failed: %s", str(exc)[:120])
+
+    snapshot_dir = settings.cinegraph_data_dir.resolve() / "productions"
+    if snapshot_dir.exists():
+        for snapshot_path in sorted(snapshot_dir.glob("*.json")):
+            try:
+                production = Production.model_validate_json(
+                    snapshot_path.read_text(encoding="utf-8")
+                )
+                restored.setdefault(production.id, production)
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                log.warning("invalid production snapshot %s: %s", snapshot_path.name, str(exc)[:100])
+
+    for production in restored.values():
+        _memory_productions[production.id] = production.model_dump()
+    return list(restored.values())
 
 
 # --------------------------------------------------------------------------- #

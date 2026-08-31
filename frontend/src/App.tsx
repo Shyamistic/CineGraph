@@ -28,14 +28,6 @@ const PHASES = [
 ];
 
 function readSession(): Session | null {
-  const demoRole = new URLSearchParams(window.location.search).get("demo");
-  if (demoRole === "director" || demoRole === "fan") {
-    return {
-      name: demoRole === "director" ? "Ava Director" : "Arjun Fan",
-      email: `${demoRole}@watchbuddy.demo`,
-      role: demoRole,
-    };
-  }
   try {
     const value = window.localStorage.getItem(SESSION_KEY);
     return value ? JSON.parse(value) : null;
@@ -117,14 +109,22 @@ export default function App() {
   const [err, setErr] = useState("");
   const [notice, setNotice] = useState("");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [loadingWorkspace, setLoadingWorkspace] = useState(true);
 
   useEffect(() => {
-    getHealth().then(setHealth).catch(() => setHealth(null));
-    getSample().then((sample) => {
-      setTitle(sample.title);
-      setScript(sample.script);
-    }).catch(() => {});
-    listProductions().then(setProductions).catch(() => {});
+    Promise.allSettled([getHealth(), getSample(), listProductions()]).then(([healthResult, sampleResult, productionsResult]) => {
+      if (healthResult.status === "fulfilled") setHealth(healthResult.value);
+      if (sampleResult.status === "fulfilled") {
+        setTitle(sampleResult.value.title);
+        setScript(sampleResult.value.script);
+      }
+      if (productionsResult.status === "fulfilled") {
+        setProductions(productionsResult.value);
+        const active = productionsResult.value.find((item) => item.status === "running") || productionsResult.value[0];
+        if (active) setProd(active);
+      }
+      setLoadingWorkspace(false);
+    });
   }, []);
 
   useEffect(() => {
@@ -149,6 +149,14 @@ export default function App() {
   async function run() {
     setErr("");
     setNotice("");
+    if (title.trim().length < 3) {
+      setErr("Give this production a title before sending it to the crew.");
+      return;
+    }
+    if (script.trim().length < 120) {
+      setErr("The crew needs at least 120 characters of screenplay context.");
+      return;
+    }
     setBusy(true);
     try {
       const created = await startProduction({ title, script, target_lang: lang, max_shots: shotsN });
@@ -179,20 +187,20 @@ export default function App() {
     setSession(null);
   }
 
-  function chooseProduction(item: Production) {
+  function chooseProduction(item: Production, destination: "watch" | "studio" = "watch") {
     setProd(item);
-    setView("watch");
+    setView(destination);
   }
 
   if (!session) return <AuthPage onEnter={setSession} />;
 
   const isDirector = session.role === "director";
   const navItems: { id: View; label: string; meta: string }[] = [
-    { id: "home", label: "Overview", meta: "01" },
-    { id: "watch", label: "Watch room", meta: "02" },
-    ...(isDirector ? [{ id: "studio" as View, label: "Director studio", meta: "03" }] : []),
-    { id: "discover", label: "Discover", meta: "04" },
-    { id: "profile", label: "My profile", meta: "05" },
+    { id: "home", label: isDirector ? "Productions" : "For you", meta: "01" },
+    ...(isDirector ? [{ id: "studio" as View, label: "Create & review", meta: "02" }] : []),
+    { id: "discover", label: "Story library", meta: isDirector ? "03" : "02" },
+    { id: "watch", label: "Screening room", meta: isDirector ? "04" : "03" },
+    { id: "profile", label: "Settings", meta: isDirector ? "05" : "04" },
   ];
 
   return (
@@ -235,14 +243,25 @@ export default function App() {
         <header className="topbar">
           <div className="breadcrumb"><span>WATCH BUDDY</span><b>/</b><strong>{view === "home" ? "Overview" : navItems.find((item) => item.id === view)?.label}</strong></div>
           <div className="topbar-actions">
-            <span className="build-label">BUILD 0.4 · AGENTIC CINEMA</span>
+            {prod && <button className="active-production-chip" onClick={() => setView(prod.status === "complete" ? "watch" : "studio")}><span className={`status-dot ${prod.status === "complete" ? "good" : ""}`} />{prod.title}<b>{prod.status === "complete" ? "Ready" : `${Math.round(prod.progress * 100)}%`}</b></button>}
+            {isDirector && <button className="topbar-create" onClick={() => { setProd(null); setView("studio"); }}>New production</button>}
             <button className="icon-button" onClick={() => setView("profile")} aria-label="Open profile">◎</button>
           </div>
         </header>
 
         {notice && <button className="toast" onClick={() => setNotice("")}>{notice}<span>×</span></button>}
         {view === "home" && (
-          <HomeView session={session} prod={prod} productions={productions} health={health} onStart={() => setView(isDirector ? "studio" : "watch")} onDemo={run} onChoose={chooseProduction} />
+          <HomeView
+            session={session}
+            prod={prod}
+            productions={productions}
+            health={health}
+            loading={loadingWorkspace}
+            onCreate={() => { setProd(null); setView("studio"); }}
+            onDiscover={() => setView("discover")}
+            onChoose={(item) => chooseProduction(item, isDirector && item.status !== "complete" ? "studio" : "watch")}
+            onReview={(item) => chooseProduction(item, "studio")}
+          />
         )}
         {view === "watch" && <WatchBuddy prod={prod} />}
         {view === "discover" && <DiscoverView productions={productions} onChoose={chooseProduction} />}
@@ -280,53 +299,87 @@ export default function App() {
   );
 }
 
-function HomeView({ session, prod, productions, health, onStart, onDemo, onChoose }: {
+function HomeView({ session, prod, productions, health, loading, onCreate, onDiscover, onChoose, onReview }: {
   session: Session;
   prod: Production | null;
   productions: Production[];
   health: Health | null;
-  onStart: () => void;
-  onDemo: () => void;
+  loading: boolean;
+  onCreate: () => void;
+  onDiscover: () => void;
   onChoose: (production: Production) => void;
+  onReview: (production: Production) => void;
 }) {
   const isDirector = session.role === "director";
+  const complete = productions.filter((item) => item.status === "complete");
+  const running = productions.filter((item) => item.status === "running" || item.status === "queued");
+  const failed = productions.filter((item) => item.status === "failed");
+  const latestEvents = productions
+    .flatMap((item) => item.events.slice(-2).map((event) => ({ ...event, title: item.title, id: item.id })))
+    .slice(-6)
+    .reverse();
+
+  if (loading) {
+    return <div className="workspace-loading"><span className="loading-reel" /><h2>Opening your studio</h2><p>Syncing productions, media, and agent activity.</p></div>;
+  }
+
   return (
-    <div className="overview-page">
-      <section className="welcome-hero">
-        <div className="hero-copy">
-          <div className="eyebrow">{isDirector ? "DIRECTOR CONTROL ROOM" : "YOUR PRIVATE WATCH ROOM"}</div>
-          <h1>{isDirector ? <>Make a world.<br /><em>Let it move.</em></> : <>Tonight, watch<br /><em>something alive.</em></>}</h1>
-          <p>{isDirector ? "A cinematic production system where every frame is understood, tested, and ready to become interactive." : "A story is more fun when your companion remembers the details and leaves room for your choices."}</p>
-          <div className="hero-actions">
-            <button className="primary-button" onClick={onStart}>{isDirector ? "Open director studio" : "Enter watch room"} <span>→</span></button>
-            <button className="text-button" onClick={onDemo}>Try the demo story <span>↗</span></button>
-          </div>
+    <div className="overview-page production-home">
+      <header className="workspace-intro">
+        <div>
+          <div className="eyebrow">{isDirector ? "DIRECTOR WORKSPACE" : "YOUR SCREENING QUEUE"}</div>
+          <h1>{isDirector ? <>Good morning, {session.name.split(" ")[0]}.<br /><em>What are we making?</em></> : <>Your next story<br /><em>is already waiting.</em></>}</h1>
         </div>
-        <div className="hero-orbit">
-          <div className="orbit orbit-one" /><div className="orbit orbit-two" />
-          <div className="hero-buddy"><BuddyGlyph /></div>
-          <div className="orbit-label label-top">SCENE AWARE</div>
-          <div className="orbit-label label-bottom">ALWAYS WITH YOU</div>
+        <div className="workspace-actions">
+          <button className="primary-button" onClick={isDirector ? onCreate : onDiscover}>{isDirector ? "Create production" : "Explore stories"} <span>→</span></button>
+          <div className="runtime-proof"><span className={`status-dot ${health?.gemini ? "good" : ""}`} /><strong>{health?.gemini ? "Gemini connected" : "Generation fallback"}</strong><small>{health?.generation}</small></div>
         </div>
+      </header>
+
+      <section className="workspace-metrics" aria-label="Workspace summary">
+        <article><span>Productions</span><strong>{productions.length.toString().padStart(2, "0")}</strong><small>{isDirector ? `${running.length} active now` : `${complete.length} ready to watch`}</small></article>
+        <article><span>Generated scenes</span><strong>{productions.reduce((sum, item) => sum + item.shots.length, 0).toString().padStart(2, "0")}</strong><small>Across your library</small></article>
+        <article><span>Ready to screen</span><strong>{complete.length.toString().padStart(2, "0")}</strong><small>QC and localization complete</small></article>
+        <article><span>Needs attention</span><strong>{failed.length.toString().padStart(2, "0")}</strong><small>{failed.length ? "Open to inspect failure" : "All systems moving"}</small></article>
       </section>
-      <section className="stat-row">
-        <div><span>Active productions</span><strong>{productions.length.toString().padStart(2, "0")}</strong><small>{productions.length ? "Ready to continue" : "Start your first story"}</small></div>
-        <div><span>Agent crew</span><strong>07</strong><small>Specialists working in sync</small></div>
-        <div><span>Engine status</span><strong className="stat-live">{health?.gemini ? "LIVE" : "DEMO"}</strong><small>{health?.clickhouse?.connected ? "Cloud services connected" : "Local fallback active"}</small></div>
-        <div><span>Latest milestone</span><strong>{prod?.status === "complete" ? "100%" : prod ? `${Math.round(prod.progress * 100)}%` : "—"}</strong><small>{prod ? prod.phase : "No story in progress"}</small></div>
-      </section>
-      {prod && (
-        <section className="continue-card">
-          <div className="section-kicker">CONTINUE YOUR STORY</div>
-          <div className="continue-content"><div><h2>{prod.title}</h2><p>{prod.status === "complete" ? "Your production is ready for the watch room." : "Your agent crew is still shaping the film."}</p></div><button className="soft-button" onClick={() => onChoose(prod)}>Open production <span>→</span></button></div>
-          <div className="mini-progress"><span style={{ width: `${Math.max(5, prod.progress * 100)}%` }} /></div>
+
+      <div className="workspace-grid">
+        <section className="production-library">
+          <div className="section-heading"><div><span className="section-kicker">{isDirector ? "YOUR SLATE" : "CONTINUE WATCHING"}</span><h2>{productions.length ? "Stories in motion" : "Your first world starts here"}</h2></div>{productions.length > 3 && <button className="text-button" onClick={onDiscover}>View full library →</button>}</div>
+          {productions.length === 0 ? (
+            <button className="empty-production" onClick={isDirector ? onCreate : onDiscover}><span className="empty-production-mark">+</span><div><strong>{isDirector ? "Create your first production" : "Browse the story library"}</strong><small>{isDirector ? "Bring a screenplay. The agent crew handles the production graph." : "Choose a finished story and meet your Watch Buddy."}</small></div></button>
+          ) : (
+            <div className="production-list">
+              {productions.slice(0, 5).map((item, index) => <ProductionRow key={item.id} production={item} index={index} onOpen={() => onChoose(item)} onReview={isDirector ? () => onReview(item) : undefined} />)}
+            </div>
+          )}
         </section>
-      )}
-      <section className="principles">
-        <div className="section-kicker">THE WATCH BUDDY PROMISE</div>
-        <div className="principle-grid"><div><b>01</b><strong>It sees the story</strong><p>Scene-aware context makes every nudge feel earned, not random.</p></div><div><b>02</b><strong>It respects the cut</strong><p>Every fan branch is labeled, scored, watermarked, and traceable.</p></div><div><b>03</b><strong>It speaks your language</strong><p>English, Hindi, Tamil, and Telugu are first-class ways to watch.</p></div></div>
-      </section>
+
+        <aside className="activity-console">
+          <div className="section-heading"><div><span className="section-kicker">LIVE ACTIVITY</span><h2>Agent room</h2></div><span className="live-signal">LIVE</span></div>
+          <div className="activity-stream">
+            {latestEvents.length ? latestEvents.map((event, index) => <button key={`${event.id}-${index}`} onClick={() => onChoose(productions.find((item) => item.id === event.id)!)}><i /><span><strong>{event.title}</strong><small>{event.message}</small></span><b>{Math.round(event.progress * 100)}%</b></button>) : <div className="quiet-activity"><BuddyGlyph /><p>Agent activity will appear here as your production moves.</p></div>}
+          </div>
+          <div className="service-stack">
+            <div><span><i className={`status-dot ${health?.gemini ? "good" : ""}`} />Gemini generation</span><b>{health?.gemini ? "Live" : "Fallback"}</b></div>
+            <div><span><i className={`status-dot ${health?.clickhouse?.connected ? "good" : ""}`} />Asset ledger</span><b>{health?.clickhouse?.connected ? "Connected" : "Local"}</b></div>
+            <div><span><i className="status-dot good" />Timeline engine</span><b>Synchronized</b></div>
+          </div>
+        </aside>
+      </div>
     </div>
+  );
+}
+
+function ProductionRow({ production, index, onOpen, onReview }: { production: Production; index: number; onOpen: () => void; onReview?: () => void }) {
+  const image = production.shots.find((shot) => shot.media_path)?.media_path;
+  const isReady = production.status === "complete";
+  return (
+    <article className="production-row">
+      <button className={`production-poster poster-${index % 4}`} onClick={onOpen}>{image ? <img src={image} alt="" /> : <span>{String(index + 1).padStart(2, "0")}</span>}<i>{isReady ? "READY" : production.status.toUpperCase()}</i></button>
+      <button className="production-summary" onClick={onOpen}><span className="production-meta">{production.shots.length || "—"} scenes · {production.generation_backend}</span><strong>{production.title}</strong><small>{production.error || production.events[production.events.length - 1]?.message || (isReady ? "Ready for the screening room" : "Waiting for the agent crew")}</small><div className="row-progress"><span style={{ width: `${Math.max(3, production.progress * 100)}%` }} /></div></button>
+      <div className="production-actions"><b>{isReady ? "Published cut" : production.phase.replace(/_/g, " ")}</b>{onReview && <button onClick={onReview}>{isReady ? "Review" : "Open studio"} →</button>}<button onClick={onOpen}>{isReady ? "Watch" : "Details"} →</button></div>
+    </article>
   );
 }
 
@@ -335,10 +388,26 @@ function BuddyGlyph() {
 }
 
 function DiscoverView({ productions, onChoose }: { productions: Production[]; onChoose: (production: Production) => void }) {
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<"all" | "ready" | "making">("all");
+  const visible = productions.filter((item) => {
+    const matchesSearch = item.title.toLowerCase().includes(search.toLowerCase());
+    const matchesFilter = filter === "all" || (filter === "ready" ? item.status === "complete" : item.status !== "complete");
+    return matchesSearch && matchesFilter;
+  });
   return (
     <div className="discover-page">
-      <div className="page-heading"><div><div className="eyebrow">THE COMMUNITY CUT</div><h1>Stories in motion.</h1><p>Explore productions made with the Watch Buddy engine.</p></div><span className="heading-count">{productions.length.toString().padStart(2, "0")} stories</span></div>
-      {productions.length === 0 ? <div className="empty-card"><span className="empty-icon">✦</span><h2>The gallery is waiting.</h2><p>Run the demo story to create the first world in your library.</p></div> : <div className="discover-grid">{productions.map((production, index) => <button className="discover-card" key={production.id} onClick={() => onChoose(production)}><div className={`discover-art art-${index % 4}`}><span>{String(index + 1).padStart(2, "0")}</span><b>{production.status === "complete" ? "READY TO WATCH" : "IN PRODUCTION"}</b></div><div className="discover-info"><strong>{production.title}</strong><span>{production.shots.length || "—"} scenes · {production.generation_backend}</span><small>{production.status === "complete" ? "Open watch room →" : `${Math.round(production.progress * 100)}% complete`}</small></div></button>)}</div>}
+      <div className="page-heading"><div><div className="eyebrow">STORY LIBRARY</div><h1>Find your next<br /><em>living story.</em></h1><p>Every title here carries scene context, localized voice, and an ending you can reshape.</p></div><span className="heading-count">{visible.length.toString().padStart(2, "0")} stories</span></div>
+      <div className="library-controls">
+        <label><span>Search the library</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search by title" /></label>
+        <div className="library-filters" aria-label="Filter stories">
+          {(["all", "ready", "making"] as const).map((value) => <button key={value} className={filter === value ? "active" : ""} onClick={() => setFilter(value)}>{value === "all" ? "All stories" : value === "ready" ? "Ready to watch" : "In production"}</button>)}
+        </div>
+      </div>
+      {visible.length === 0 ? <div className="empty-card"><span className="empty-icon">+</span><h2>No stories match this view.</h2><p>Change the filter or create a new production from the Director workspace.</p></div> : <div className="discover-grid">{visible.map((production, index) => {
+        const image = production.shots.find((shot) => shot.media_path)?.media_path;
+        return <button className="discover-card" key={production.id} onClick={() => onChoose(production)}><div className={`discover-art art-${index % 4}`}>{image ? <img src={image} alt="" /> : <span>{String(index + 1).padStart(2, "0")}</span>}<b>{production.status === "complete" ? "READY TO WATCH" : "IN PRODUCTION"}</b><i>{production.shots.length || "—"} SCENES</i></div><div className="discover-info"><strong>{production.title}</strong><span>{production.generation_backend} · {production.localization?.target_lang?.toUpperCase() || "VOICE PENDING"}</span><small>{production.status === "complete" ? "Enter screening room →" : `${Math.round(production.progress * 100)}% · ${production.phase.replace(/_/g, " ")}`}</small></div></button>;
+      })}</div>}
     </div>
   );
 }
