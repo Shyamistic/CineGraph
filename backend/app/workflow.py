@@ -470,6 +470,7 @@ def _run_pipeline_blocking(prod: Production, body: ProductionCreate) -> None:
 
             prod.traces = spans_for_production(prod.id)
             prod.status = "complete"
+            prod.published = True
             prod.phase = "complete"
             prod.progress = 1.0
             _event(prod, "complete", "Pipeline sealed. Ready for NLE handoff.", 1.0)
@@ -481,7 +482,7 @@ def _run_pipeline_blocking(prod: Production, body: ProductionCreate) -> None:
         upsert_production(prod)
 
 
-async def start_production(body: ProductionCreate) -> Production:
+async def start_production(body: ProductionCreate, *, owner_id: str = "", owner_email: str = "") -> Production:
     _ensure_hydrated()
     prod = Production(
         id=new_id("cg_"),
@@ -489,6 +490,8 @@ async def start_production(body: ProductionCreate) -> Production:
         script=body.script,
         status="queued",
         generation_backend=backend_name(),
+        owner_id=owner_id,
+        owner_email=owner_email,
     )
     _jobs[prod.id] = prod
     upsert_production(prod)

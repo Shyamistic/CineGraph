@@ -107,7 +107,7 @@ class Settings(BaseSettings):
     clickhouse_host: str = "localhost"
     clickhouse_port: int = 8123
     clickhouse_user: str = "default"
-    clickhouse_password: str = ""
+    clickhouse_password: str = "cinegraph-local"
     clickhouse_database: str = "cinegraph"
 
     otel_exporter_otlp_endpoint: str = "http://localhost:4318"
@@ -120,7 +120,7 @@ class Settings(BaseSettings):
     cinegraph_data_dir: Path = Path(__file__).resolve().parents[2] / "data"
     cinegraph_host: str = "0.0.0.0"
     cinegraph_port: int = 8000
-    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5000,http://127.0.0.1:5000"
     skip_tts: bool = False
 
     @property

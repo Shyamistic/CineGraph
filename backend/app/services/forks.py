@@ -28,7 +28,6 @@ from app.telemetry import agent_span, new_id
 log = logging.getLogger("cinegraph.forks")
 
 FAN_ATTRIBUTION = "Fan-generated with CineGraph. Not an official studio cut."
-STUDIO_ATTRIBUTION = "Official alternate ending, minted with CineGraph."
 
 
 def _fork_prompt(shot: Shot, viewer_prompt: str) -> str:
@@ -80,6 +79,7 @@ def generate_fork(
     whisper_lang: str = "hi",
 ) -> Fork:
     """Mint one alternate-ending fork, scored and watermarked."""
+    origin = "fan"
     max_iters = max_iters or settings.max_loop_iters
     vta_threshold = vta_threshold if vta_threshold is not None else settings.vta_threshold
 
@@ -120,13 +120,14 @@ def generate_fork(
                 break
             prompt = f"{composed}\n\n{directive}"
 
-    attribution = STUDIO_ATTRIBUTION if origin == "studio" else FAN_ATTRIBUTION
-    if origin != "studio" and best_path:
+    attribution = FAN_ATTRIBUTION
+    still_marked = False
+    if best_path:
         with agent_span("fork_watermark", "watch_buddy", fork=fork_id):
-            watermark.apply_fork_watermark(
+            still_marked = watermark.apply_fork_watermark(
                 best_path,
                 branch_label=branch_label,
-                origin=origin,
+                origin="fan",
                 attribution=attribution,
             )
 
@@ -160,7 +161,7 @@ def generate_fork(
         branch_label=branch_label,
         viewer_prompt=viewer_prompt,
         composed_prompt=composed,
-        origin="studio" if origin == "studio" else "fan",
+        origin="fan",
         media_kind=media_kind,
         media_path=media_path,
         poster_path=best_path if media_kind == "video" else "",
@@ -168,11 +169,9 @@ def generate_fork(
         vta_score=round(best_vta, 3),
         loop_iterations=iterations,
         generation_backend=best_backend,
-        watermarked=(origin != "studio"),
+        watermarked=still_marked if media_kind != "video" else still_marked,
         attribution=attribution,
-        rights_status=(
-            "official-studio-mint" if origin == "studio" else "fan-generated-derivative"
-        ),
+        rights_status="fan-generated-derivative",
         dsg=dsg,
         verdicts=best_verdicts,
         embedding=embedding,

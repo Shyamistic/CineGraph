@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -27,12 +28,17 @@ _memory_productions: dict[str, dict[str, Any]] = {}
 _client = None
 _clickhouse_ok = False
 _vector_index_ok = False
+_failed_at: float | None = None
+_RETRY_AFTER_S = 15.0
 
 
 def _try_client():
-    global _client, _clickhouse_ok
-    if _client is not None:
-        return _client if _clickhouse_ok else None
+    global _client, _clickhouse_ok, _failed_at
+    if _client is not None and _clickhouse_ok:
+        return _client
+    now = time.monotonic()
+    if _failed_at is not None and (now - _failed_at) < _RETRY_AFTER_S:
+        return None
     try:
         import clickhouse_connect
 
@@ -41,8 +47,6 @@ def _try_client():
             host=settings.clickhouse_host,
             port=settings.clickhouse_port,
             username=settings.clickhouse_user,
-            # Pass "" not None: the driver authenticates an empty-password user
-            # only with an explicit empty string; None triggers code 194.
             password=settings.clickhouse_password,
             database=settings.clickhouse_database,
             connect_timeout=2,
@@ -51,13 +55,15 @@ def _try_client():
         client.command("SELECT 1")
         _client = client
         _clickhouse_ok = True
+        _failed_at = None
         _detect_vector_index(client)
         log.info("ClickHouse connected (%s)", settings.clickhouse_host)
         return client
     except Exception as exc:
-        log.info("ClickHouse unavailable, using memory store: %s", str(exc)[:120])
-        _client = object()  # sentinel so we don't retry on every call
+        log.info("ClickHouse unavailable, using memory/snapshot store: %s", str(exc)[:120])
+        _client = None
         _clickhouse_ok = False
+        _failed_at = time.monotonic()
         return None
 
 
@@ -101,13 +107,6 @@ def upsert_production(prod: Production) -> None:
     if not client:
         return
     try:
-        client.command(
-            "ALTER TABLE productions DELETE WHERE id = %(id)s",
-            parameters={"id": prod.id},
-        )
-    except Exception:
-        pass
-    try:
         now = datetime.utcnow()
         client.insert(
             "productions",
@@ -115,7 +114,7 @@ def upsert_production(prod: Production) -> None:
             column_names=["id", "title", "script", "status", "payload_json", "created_at", "updated_at"],
         )
     except Exception as exc:
-        log.warning("production upsert failed: %s", str(exc)[:120])
+        log.error("production upsert failed: %s", str(exc)[:200])
 
 
 def load_productions() -> list[Production]:
@@ -125,7 +124,7 @@ def load_productions() -> list[Production]:
     if client:
         try:
             result = client.query(
-                "SELECT payload_json FROM productions ORDER BY updated_at DESC"
+                "SELECT payload_json FROM productions FINAL ORDER BY updated_at DESC"
             )
             for row in result.result_rows:
                 production = Production.model_validate_json(row[0])
@@ -201,7 +200,7 @@ def insert_shot(prod: Production, shot: Shot) -> None:
 # Forks (Watch Buddy alternate endings) - the provenance ledger
 # --------------------------------------------------------------------------- #
 
-def insert_fork(fork: Fork) -> None:
+def insert_fork(fork: Fork) -> bool:
     row = {
         "fork_id": fork.fork_id,
         "production_id": fork.production_id,
@@ -232,7 +231,7 @@ def insert_fork(fork: Fork) -> None:
     _memory_forks.append(row)
     client = _try_client()
     if not client:
-        return
+        return False
     try:
         client.insert(
             "forks",
@@ -256,8 +255,10 @@ def insert_fork(fork: Fork) -> None:
                 "dsg_json", "verdicts_json", "embedding", "created_at",
             ],
         )
+        return True
     except Exception as exc:
         log.warning("fork insert failed: %s", str(exc)[:120])
+        return False
 
 
 def list_forks(production_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:

@@ -17,7 +17,7 @@
     </profiles>
     <users>
         <default>
-            <password></password>
+            <password>cinegraph-local</password>
             <networks>
                 <ip>::/0</ip>
             </networks>

@@ -189,15 +189,18 @@ class Production(BaseModel):
     error: str | None = None
     generation_backend: str = "mock"
     maven_mode: str = "sequential"
+    owner_id: str = ""
+    owner_email: str = ""
+    published: bool = False
 
 
 class ProductionCreate(BaseModel):
-    title: str = "Untitled Production"
-    script: str
-    target_lang: str = "hi"
-    max_shots: int = 6
-    vta_threshold: float = 0.72
-    max_loop_iters: int = 2
+    title: str = Field(default="Untitled Production", max_length=200)
+    script: str = Field(min_length=1, max_length=80_000)
+    target_lang: str = Field(default="hi", min_length=2, max_length=8)
+    max_shots: int = Field(default=6, ge=1, le=8)
+    vta_threshold: float = Field(default=0.72, ge=0.0, le=1.0)
+    max_loop_iters: int = Field(default=2, ge=1, le=3)
 
 
 class AssetSearchQuery(BaseModel):
@@ -209,10 +212,29 @@ class AssetSearchQuery(BaseModel):
 class ForkRequest(BaseModel):
     """A viewer's alternate-ending request from the Watch Buddy surface."""
 
-    production_id: str
-    shot_id: str | None = None            # which scene to fork; defaults to last
-    viewer_prompt: str                    # "what if he lives?"
-    branch_label: str = ""                # short tappable label
-    origin: Literal["fan", "studio"] = "fan"
-    max_loop_iters: int = 2
-    whisper_lang: str = "hi"              # language for the buddy's spoken narration
+    production_id: str = Field(min_length=1, max_length=64)
+    shot_id: str | None = Field(default=None, max_length=64)
+    viewer_prompt: str = Field(min_length=1, max_length=2000)
+    branch_label: str = Field(default="", max_length=80)
+    max_loop_iters: int = Field(default=2, ge=1, le=3)
+    whisper_lang: str = Field(default="hi", min_length=2, max_length=8)
+
+
+class ForkJob(BaseModel):
+    job_id: str
+    status: Literal["queued", "running", "complete", "failed"] = "queued"
+    fork: Fork | None = None
+    error: str | None = None
+    persisted: bool = False
+
+
+class AuthRegister(BaseModel):
+    name: str = Field(min_length=2, max_length=80)
+    email: str = Field(min_length=5, max_length=120)
+    password: str = Field(min_length=8, max_length=200)
+    role: Literal["director", "fan"] = "fan"
+
+
+class AuthLogin(BaseModel):
+    email: str = Field(min_length=5, max_length=120)
+    password: str = Field(min_length=8, max_length=200)

@@ -2,8 +2,7 @@ services:
   clickhouse:
     image: clickhouse/clickhouse-server:25.3
     ports:
-      - "8123:8123"
-      - "9000:9000"
+      - "127.0.0.1:8123:8123"
     volumes:
       - ./infra/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
       - ./infra/clickhouse/users.d/vector.xml:/etc/clickhouse-server/users.d/vector.xml:ro
@@ -19,16 +18,16 @@ services:
     volumes:
       - ./infra/tempo.yaml:/etc/tempo.yaml:ro
     ports:
-      - "3200:3200"
-      - "4318:4318"
+      - "127.0.0.1:3200:3200"
+      - "127.0.0.1:4318:4318"
 
   grafana:
     image: grafana/grafana:11.2.0
     ports:
-      - "3001:3000"
+      - "127.0.0.1:3001:3000"
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
     volumes:
       - ./infra/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro

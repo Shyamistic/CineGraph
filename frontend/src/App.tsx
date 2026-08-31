@@ -2,21 +2,24 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import WatchBuddy from "./WatchBuddy";
 import {
   getHealth,
+  getMe,
   getProduction,
   getSample,
   listProductions,
+  loginAccount,
+  logoutAccount,
+  registerAccount,
   searchAssets,
+  setAccountRole,
   startProduction,
   type Health,
   type Production,
+  type Session,
 } from "./api";
 
 type Role = "director" | "fan";
 type View = "home" | "watch" | "studio" | "discover" | "profile";
 type StudioTab = "board" | "maven" | "library" | "qc" | "dub" | "nle" | "trace";
-type Session = { name: string; email: string; role: Role };
-
-const SESSION_KEY = "watch-buddy-session";
 const PHASES = [
   { id: "director", label: "Director", role: "MAVEN" },
   { id: "producer", label: "Producer", role: "DSG loop" },
@@ -27,29 +30,30 @@ const PHASES = [
   { id: "complete", label: "Observability", role: "OTel" },
 ];
 
-function readSession(): Session | null {
-  try {
-    const value = window.localStorage.getItem(SESSION_KEY);
-    return value ? JSON.parse(value) : null;
-  } catch {
-    return null;
-  }
-}
-
 function AuthPage({ onEnter }: { onEnter: (session: Session) => void }) {
+  const [mode, setMode] = useState<"login" | "register">("register");
   const [role, setRole] = useState<Role>("director");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
-    const session = {
-      name: name.trim() || (role === "director" ? "Ava Director" : "Arjun Fan"),
-      email: email.trim() || `${role}@watchbuddy.demo`,
-      role,
-    };
-    window.localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-    onEnter(session);
+    setError("");
+    setBusy(true);
+    try {
+      const session =
+        mode === "register"
+          ? await registerAccount({ name, email, password, role })
+          : await loginAccount({ email, password });
+      onEnter(session);
+    } catch (err) {
+      setError(err instanceof Error ? err.message.replace(/["{}]/g, " ").trim() : "Unable to sign in");
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -61,39 +65,59 @@ function AuthPage({ onEnter }: { onEnter: (session: Session) => void }) {
         <span>WATCH BUDDY</span>
       </div>
       <main className="auth-card">
-        <div className="eyebrow">A NEW KIND OF WATCHING</div>
+        <div className="eyebrow">GOVERNED FAN CINEMA</div>
         <h1>Stories that watch back.</h1>
-        <p className="auth-copy">Create a world, invite your audience in, and let every viewer leave a fingerprint on the ending.</p>
+        <p className="auth-copy">Directors define the world. Fans discover new paths through it. Every derivative is watermarked and logged.</p>
+        <div className="role-picker auth-mode" aria-label="Account action">
+          <button type="button" className={mode === "register" ? "role-option active" : "role-option"} onClick={() => setMode("register")}>
+            <span className="role-icon">+</span>
+            <span><strong>Create account</strong><small>Server-side session</small></span>
+          </button>
+          <button type="button" className={mode === "login" ? "role-option active" : "role-option"} onClick={() => setMode("login")}>
+            <span className="role-icon">→</span>
+            <span><strong>Sign in</strong><small>Existing account</small></span>
+          </button>
+        </div>
         <form onSubmit={submit}>
-          <div className="role-picker" aria-label="Choose your experience">
-            <button type="button" className={role === "director" ? "role-option active" : "role-option"} onClick={() => setRole("director")}>
-              <span className="role-icon">D</span>
-              <span><strong>Director</strong><small>Build cinematic worlds</small></span>
-            </button>
-            <button type="button" className={role === "fan" ? "role-option active" : "role-option"} onClick={() => setRole("fan")}>
-              <span className="role-icon">F</span>
-              <span><strong>Fan</strong><small>Watch beyond the frame</small></span>
-            </button>
-          </div>
-          <label htmlFor="name">Your name</label>
-          <input id="name" value={name} onChange={(event) => setName(event.target.value)} placeholder={role === "director" ? "Ava Director" : "Arjun Fan"} />
+          {mode === "register" && (
+            <div className="role-picker" aria-label="Choose your experience">
+              <button type="button" className={role === "director" ? "role-option active" : "role-option"} onClick={() => setRole("director")}>
+                <span className="role-icon">D</span>
+                <span><strong>Director</strong><small>Build cinematic worlds</small></span>
+              </button>
+              <button type="button" className={role === "fan" ? "role-option active" : "role-option"} onClick={() => setRole("fan")}>
+                <span className="role-icon">F</span>
+                <span><strong>Fan</strong><small>Watch beyond the frame</small></span>
+              </button>
+            </div>
+          )}
+          {mode === "register" && (
+            <>
+              <label htmlFor="name">Your name</label>
+              <input id="name" value={name} onChange={(event) => setName(event.target.value)} placeholder={role === "director" ? "Ava Director" : "Arjun Fan"} required />
+            </>
+          )}
           <label htmlFor="email">Email address</label>
-          <input id="email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder={`${role}@watchbuddy.demo`} />
-          <button className="primary-button auth-submit" type="submit">Enter Watch Buddy <span>→</span></button>
+          <input id="email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@studio.film" required />
+          <label htmlFor="password">Password</label>
+          <input id="password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="At least 8 characters" minLength={8} required />
+          {error && <p className="error-text">{error}</p>}
+          <button className="primary-button auth-submit" type="submit" disabled={busy}>{busy ? "Connecting…" : mode === "register" ? "Create account →" : "Enter Watch Buddy →"}</button>
         </form>
-        <p className="auth-note">Demo access · no password required</p>
+        <p className="auth-note">HttpOnly session cookie · not stored in this browser’s localStorage</p>
       </main>
       <div className="auth-proof">
         <span>Powered by Gemini</span>
         <i />
-        <span>Built for Agentic Cinema</span>
+        <span>ClickHouse provenance ledger</span>
       </div>
     </div>
   );
 }
 
 export default function App() {
-  const [session, setSession] = useState<Session | null>(() => readSession());
+  const [session, setSession] = useState<Session | null>(null);
+  const [authReady, setAuthReady] = useState(false);
   const [health, setHealth] = useState<Health | null>(null);
   const [title, setTitle] = useState("The Last Reel");
   const [script, setScript] = useState("");
@@ -101,7 +125,7 @@ export default function App() {
   const [shotsN, setShotsN] = useState(4);
   const [prod, setProd] = useState<Production | null>(null);
   const [productions, setProductions] = useState<Production[]>([]);
-  const [view, setView] = useState<View>(() => readSession()?.role === "fan" ? "watch" : "home");
+  const [view, setView] = useState<View>("home");
   const [studioTab, setStudioTab] = useState<StudioTab>("board");
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("high-contrast lighting tracking shot");
@@ -112,6 +136,16 @@ export default function App() {
   const [loadingWorkspace, setLoadingWorkspace] = useState(true);
 
   useEffect(() => {
+    getMe().then((me) => {
+      setSession(me);
+      if (me?.role === "fan") setView("watch");
+      setAuthReady(true);
+    }).catch(() => setAuthReady(true));
+  }, []);
+
+  useEffect(() => {
+    if (!session) return;
+    setLoadingWorkspace(true);
     Promise.allSettled([getHealth(), getSample(), listProductions()]).then(([healthResult, sampleResult, productionsResult]) => {
       if (healthResult.status === "fulfilled") setHealth(healthResult.value);
       if (sampleResult.status === "fulfilled") {
@@ -125,7 +159,7 @@ export default function App() {
       }
       setLoadingWorkspace(false);
     });
-  }, []);
+  }, [session?.id]);
 
   useEffect(() => {
     if (!prod?.id || prod.status === "complete" || prod.status === "failed") return;
@@ -182,9 +216,11 @@ export default function App() {
     }
   }
 
-  function signOut() {
-    window.localStorage.removeItem(SESSION_KEY);
+  async function signOut() {
+    await logoutAccount();
     setSession(null);
+    setProductions([]);
+    setProd(null);
   }
 
   function chooseProduction(item: Production, destination: "watch" | "studio" = "watch") {
@@ -192,7 +228,11 @@ export default function App() {
     setView(destination);
   }
 
-  if (!session) return <AuthPage onEnter={setSession} />;
+  if (!authReady) {
+    return <div className="workspace-loading"><span className="loading-reel" /><h2>Checking your session</h2><p>Connecting to the Watch Buddy API.</p></div>;
+  }
+
+  if (!session) return <AuthPage onEnter={(next) => { setSession(next); setView(next.role === "fan" ? "watch" : "home"); }} />;
 
   const isDirector = session.role === "director";
   const navItems: { id: View; label: string; meta: string }[] = [
@@ -265,9 +305,8 @@ export default function App() {
         )}
         {view === "watch" && <WatchBuddy prod={prod} />}
         {view === "discover" && <DiscoverView productions={productions} onChoose={chooseProduction} />}
-        {view === "profile" && <ProfileView session={session} health={health} onRoleSwitch={(role) => {
-          const next = { ...session, role };
-          window.localStorage.setItem(SESSION_KEY, JSON.stringify(next));
+        {view === "profile" && <ProfileView session={session} health={health} onRoleSwitch={async (role) => {
+          const next = await setAccountRole(role);
           setSession(next);
           setView(role === "director" ? "home" : "watch");
         }} />}

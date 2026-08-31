@@ -2,8 +2,8 @@ export type Health = {
   ok: boolean;
   gemini: boolean;
   generation: string;
-  clickhouse: { connected: boolean; mode: string; host: string };
-  otel: string;
+  clickhouse: { connected: boolean; mode: string; host?: string; vector_index?: boolean };
+  otel: string | { enabled: boolean };
   capabilities?: {
     watch_buddy: boolean;
     timeline_sync: boolean;
@@ -12,6 +12,30 @@ export type Health = {
     third_party_app_capture: boolean;
   };
 };
+
+export type Session = {
+  id: string;
+  name: string;
+  email: string;
+  role: "director" | "fan";
+};
+
+async function api(path: string, init: RequestInit = {}) {
+  const r = await fetch(path, { credentials: "include", ...init });
+  return r;
+}
+
+async function readError(r: Response) {
+  const text = await r.text();
+  try {
+    const parsed = JSON.parse(text) as { detail?: unknown };
+    if (typeof parsed.detail === "string") return parsed.detail;
+    if (Array.isArray(parsed.detail)) return parsed.detail.map((item) => (typeof item === "object" && item && "msg" in item ? String(item.msg) : String(item))).join(" ");
+  } catch {
+    // Keep the raw body.
+  }
+  return text || r.statusText;
+}
 
 export type Shot = {
   shot_id: string;
@@ -72,17 +96,63 @@ export type Production = {
 };
 
 export async function getHealth(): Promise<Health> {
-  const r = await fetch("/api/health");
+  const r = await api("/api/health");
+  return r.json();
+}
+
+export async function getMe(): Promise<Session | null> {
+  const r = await api("/api/auth/me");
+  if (r.status === 401) return null;
+  if (!r.ok) return null;
+  return r.json();
+}
+
+export async function registerAccount(body: {
+  name: string;
+  email: string;
+  password: string;
+  role: "director" | "fan";
+}): Promise<Session> {
+  const r = await api("/api/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await readError(r));
+  return r.json();
+}
+
+export async function loginAccount(body: { email: string; password: string }): Promise<Session> {
+  const r = await api("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await readError(r));
+  return r.json();
+}
+
+export async function logoutAccount() {
+  await api("/api/auth/logout", { method: "POST" });
+}
+
+export async function setAccountRole(role: "director" | "fan"): Promise<Session> {
+  const r = await api("/api/auth/role", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ role }),
+  });
+  if (!r.ok) throw new Error(await readError(r));
   return r.json();
 }
 
 export async function getSample() {
-  const r = await fetch("/api/sample-script");
+  const r = await api("/api/sample-script");
   return r.json() as Promise<{ title: string; script: string }>;
 }
 
 export async function listProductions(): Promise<Production[]> {
-  const r = await fetch("/api/productions");
+  const r = await api("/api/productions");
   if (!r.ok) throw new Error("Unable to load productions");
   return r.json();
 }
@@ -93,17 +163,17 @@ export async function startProduction(body: {
   target_lang: string;
   max_shots: number;
 }): Promise<Production> {
-  const r = await fetch("/api/productions", {
+  const r = await api("/api/productions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...body, vta_threshold: 0.72, max_loop_iters: 2 }),
   });
-  if (!r.ok) throw new Error(await r.text());
+  if (!r.ok) throw new Error(await readError(r));
   return r.json();
 }
 
 export async function getProduction(id: string): Promise<Production> {
-  const r = await fetch(`/api/productions/${id}`);
+  const r = await api(`/api/productions/${id}`);
   if (!r.ok) throw new Error("missing production");
   return r.json();
 }
@@ -136,7 +206,7 @@ export type CastMedia = {
 };
 
 export async function getTimeline(id: string): Promise<{ production_id: string; duration_ms: number; items: TimelineItem[] }> {
-  const r = await fetch(`/api/productions/${id}/timeline`);
+  const r = await api(`/api/productions/${id}/timeline`);
   if (!r.ok) throw new Error("Unable to load watch timeline");
   return r.json();
 }
@@ -145,13 +215,13 @@ export async function getCastMedia(productionId: string, shotId?: string, forkId
   const params = new URLSearchParams({ production_id: productionId });
   if (shotId) params.set("shot_id", shotId);
   if (forkId) params.set("fork_id", forkId);
-  const r = await fetch(`/api/cast/media?${params.toString()}`);
-  if (!r.ok) throw new Error(await r.text());
+  const r = await api(`/api/cast/media?${params.toString()}`);
+  if (!r.ok) throw new Error(await readError(r));
   return r.json();
 }
 
 export async function searchAssets(query: string, production_id?: string) {
-  const r = await fetch("/api/assets/search", {
+  const r = await api("/api/assets/search", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, production_id, limit: 8 }),
@@ -204,8 +274,8 @@ export type LineageSummary = {
 
 export async function getBranches(productionId: string, shotId?: string): Promise<BranchResponse> {
   const q = shotId ? `?shot_id=${encodeURIComponent(shotId)}` : "";
-  const r = await fetch(`/api/productions/${productionId}/branches${q}`);
-  if (!r.ok) throw new Error(await r.text());
+  const r = await api(`/api/productions/${productionId}/branches${q}`);
+  if (!r.ok) throw new Error(await readError(r));
   return r.json();
 }
 
@@ -214,19 +284,27 @@ export async function mintFork(body: {
   shot_id?: string;
   viewer_prompt: string;
   branch_label: string;
-  origin?: "fan" | "studio";
 }): Promise<Fork> {
-  const r = await fetch("/api/forks", {
+  const started = await api("/api/forks", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...body, max_loop_iters: 2 }),
   });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+  if (!started.ok) throw new Error(await started.text());
+  const job = (await started.json()) as { job_id: string };
+  for (let i = 0; i < 180; i++) {
+    const r = await api(`/api/fork-jobs/${job.job_id}`);
+    if (!r.ok) throw new Error(await readError(r));
+    const next = (await r.json()) as { status: string; error?: string | null; fork?: Fork | null };
+    if (next.status === "complete" && next.fork) return next.fork;
+    if (next.status === "failed") throw new Error(next.error || "Mint failed");
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+  throw new Error("Mint timed out");
 }
 
 export async function listForks(productionId?: string) {
   const q = productionId ? `?production_id=${encodeURIComponent(productionId)}` : "";
-  const r = await fetch(`/api/forks${q}`);
+  const r = await api(`/api/forks${q}`);
   return r.json() as Promise<{ forks: Fork[]; lineage: LineageSummary; backend: string }>;
 }

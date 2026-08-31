@@ -1,8 +1,8 @@
 # CineGraph
 
-Multi-agent production platform for **Agentic Cinema**: script → MAVEN pre-vis → closed-loop DSG scoring → ClickHouse asset store → QC → English→Indian-language dub → FCPXML/OTIO NLE handoff, with OpenTelemetry traces.
+Multi-agent production platform for **Agentic Cinema**: script → MAVEN pre-vis → closed-loop DSG scoring → ClickHouse provenance ledger → QC → English→Indian-language dub → FCPXML/OTIO NLE handoff, with Watch Buddy fan forks and OpenTelemetry traces.
 
-This is the full seven-phase vision as a **connected, runnable pipeline**. Generation uses cinematic storyboard stills (and Gemini when a key is present) instead of Wan-14B GPU loops, so a demo survives a small budget. Live Premiere CEP / Resolve Lua plugins are not in this build; the editorial deliverable is OTIO + FCPXML.
+This is a connected, runnable pipeline. Stills come from Vertex Gemini image models when ADC is available; otherwise the UI labels DEMO stills honestly. Live Premiere CEP / Resolve Lua plugins are not in this build; the editorial deliverable is OTIO + FCPXML.
 
 ## Architecture
 
@@ -20,19 +20,20 @@ Google ADK graph (optional): `backend/app/adk_graph.py`. Runtime orchestration: 
 
 ## Quick start
 
-```powershell
-cd C:\Users\shyam.BATCONSOLE\Desktop\christopernolan
-copy .env.example .env
-# optional: paste GOOGLE_API_KEY
+Create an account in the UI (director or fan). Sessions are HttpOnly cookies backed by hashed passwords in `data/auth.json` — not browser localStorage.
 
+### Windows
+
+```powershell
+copy .env.example .env
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r backend\requirements.txt
 $env:PYTHONPATH = "backend"
-python -m uvicorn app.main:app --reload --port 8000
+python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-In a second terminal:
+Second terminal:
 
 ```powershell
 cd frontend
@@ -40,36 +41,47 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173). Click **Run full pipeline**. Mock mode works with no API keys.
+Open [http://127.0.0.1:5173](http://127.0.0.1:5173).
+
+### Linux / Replit
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r backend/requirements.txt
+export PYTHONPATH=backend
+# Replit: bash start.sh  (API on :8000, Vite on :5000)
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+cd frontend && npm install && npm run dev -- --host 0.0.0.0 --port 5173
+```
 
 ### Partner infra (ClickHouse + Grafana)
 
-```powershell
+```bash
 docker compose up -d
 ```
 
-- ClickHouse HTTP: `http://localhost:8123`
-- Grafana (anonymous): `http://localhost:3001` — Tempo datasource provisioned
-- OTLP HTTP: `http://localhost:4318`
+- ClickHouse HTTP: `http://127.0.0.1:8123` (password `cinegraph-local` unless you change `infra/clickhouse`)
+- Grafana (anonymous Viewer): `http://127.0.0.1:3001`
+- OTLP HTTP: `http://127.0.0.1:4318`
 
-The API still runs if Docker is down; assets stay in process memory.
+Health reports `clickhouse.mode` as `clickhouse` or `memory`. The judged Replit/Cloud deploy should keep ClickHouse connected so forks land in the ledger.
 
 ## Keys
 
 | Variable | Effect |
 | --- | --- |
-| `GOOGLE_API_KEY` | Real Gemini 2.5 Flash for MAVEN, DSG, QC, translation |
-| ClickHouse running | Persists productions/assets; vector `ORDER BY cosineDistance` |
+| Vertex ADC (`gcloud auth application-default login`) + `VERTEX_PROJECT` or active gcloud project | Real Gemini text/JSON and image generation |
+| `GOOGLE_API_KEY` | Gemini API fallback when Vertex is off |
+| `CLICKHOUSE_*` | Provenance ledger, HNSW search, fork lineage |
+| `ENABLE_VEO=true` | Opt-in Veo clips for Watch Buddy (costs credits) |
 | Grafana/Tempo up | OTLP export in addition to in-app traces |
-| ffmpeg on PATH | Real EBU R128 probe (storyboard PNGs will warn/fallback) |
+| ffmpeg on PATH | Real EBU R128 probe |
 
 ## API
 
-- `GET /api/health`
-- `POST /api/productions` `{ title, script, target_lang, max_shots }`
-- `GET /api/productions/{id}`
-- `POST /api/assets/search` `{ query, production_id? }`
+Public: `GET /api/health`, `POST /api/auth/register`, `POST /api/auth/login`
 
+Cookie-gated: productions, timeline, forks, Cast media, asset search.
 ## What is deliberately not studio-grade
 
 Wan2.1-14B closed-loop video, 11-language viseme MOS lab, ABR manifest QC, Vertex Agent Engine deploy, and in-NLE CEP/Lua plugins. Those are the next fidelity layer on this same graph, not a different product.

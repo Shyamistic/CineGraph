@@ -1,6 +1,10 @@
+from __future__ import annotations
+
+import asyncio
+import os
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Cookie, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -8,12 +12,16 @@ from app.adk_graph import adk_status
 from app.config import settings
 from app.models import (
     AssetSearchQuery,
+    AuthLogin,
+    AuthRegister,
+    Fork,
+    ForkJob,
     ForkRequest,
     Production,
     ProductionCreate,
     Shot,
 )
-from app.services import adk_runtime, vertex
+from app.services import adk_runtime, sessions, vertex
 from app.services.clickhouse_store import (
     clickhouse_status,
     insert_fork,
@@ -24,16 +32,28 @@ from app.services.clickhouse_store import (
 from app.services.forks import generate_fork, suggest_branches
 from app.services.generation import backend_name
 from app.services.embeddings import embed_text
-from app.telemetry import configure_telemetry
+from app.telemetry import configure_telemetry, new_id, set_production_id
 from app.workflow import SAMPLE_SCRIPT, get_production, list_productions, start_production
 
 configure_telemetry()
 
 app = FastAPI(title="CineGraph", version="0.1.0", description="Agentic Cinema production platform")
 
+def _cors_origins() -> list[str]:
+    origins = list(settings.cors_origin_list)
+    for key in ("REPLIT_DEV_DOMAIN", "REPLIT_DOMAINS"):
+        host = os.environ.get(key, "").strip()
+        if host:
+            origins.append(f"https://{host.split(',')[0].strip()}")
+    extra = os.environ.get("PUBLIC_APP_URL", "").strip().rstrip("/")
+    if extra:
+        origins.append(extra)
+    return list(dict.fromkeys(origins)) or ["http://localhost:5173"]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origin_list + ["*"],
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -43,32 +63,107 @@ media_root = settings.cinegraph_data_dir.resolve()
 media_root.mkdir(parents=True, exist_ok=True)
 app.mount("/files", StaticFiles(directory=str(media_root)), name="files")
 
+_fork_jobs: dict[str, ForkJob] = {}
+
+
+def _require_user(wb_sid: str | None) -> sessions.User:
+    user = sessions.get_user_by_session(wb_sid)
+    if not user:
+        raise HTTPException(401, "Sign in required")
+    return user
+
+
+def _cookie_secure() -> bool:
+    return bool(os.environ.get("REPLIT_DEPLOYMENT") or os.environ.get("REPLIT_DEV_DOMAIN"))
+
+
+def _set_session(response: Response, token: str) -> None:
+    response.set_cookie(
+        sessions.COOKIE_NAME,
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=_cookie_secure(),
+        max_age=60 * 60 * 24 * 14,
+        path="/",
+    )
+
 @app.get("/api/health")
 def health():
     vertex_status = vertex.status()
+    ch = clickhouse_status()
+    adk = {**adk_status(), **adk_runtime.adk_runtime_status()}
     return {
         "ok": True,
         "gemini": settings.gemini_enabled,
         "generation": backend_name(),
-        "clickhouse": clickhouse_status(),
-        "otel": settings.otel_exporter_otlp_endpoint,
+        "clickhouse": {
+            "connected": ch["connected"],
+            "mode": ch["mode"],
+            "vector_index": ch.get("vector_index", False),
+        },
+        "otel": {"enabled": settings.otel_enabled},
         "vertex": {
             "enabled": vertex_status.enabled,
-            "project": vertex_status.project,
-            "text_model": vertex_status.text_model,
             "image_route": vertex_status.image_route,
-            "embed_model": vertex_status.embed_model,
-            "reason": vertex_status.reason,
         },
-        "adk": {**adk_status(), **adk_runtime.adk_runtime_status()},
+        "adk": {
+            "available": bool(adk.get("available")),
+            "maven_mode": adk.get("maven_mode"),
+        },
         "capabilities": {
             "watch_buddy": True,
             "timeline_sync": True,
-            "cast_sender": "roadmap-preview",
-            "android_tv_receiver": "roadmap",
+            "cast_sender": "media-loading",
+            "android_tv_receiver": "default-media-receiver",
             "third_party_app_capture": False,
         },
     }
+
+
+@app.post("/api/auth/register")
+def auth_register(body: AuthRegister, response: Response):
+    try:
+        user = sessions.register(body.name, body.email, body.password, body.role)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    token = sessions.create_session(user)
+    _set_session(response, token)
+    return user.public()
+
+
+@app.post("/api/auth/login")
+def auth_login(body: AuthLogin, response: Response):
+    try:
+        user = sessions.authenticate(body.email, body.password)
+    except ValueError as exc:
+        raise HTTPException(401, str(exc)) from exc
+    token = sessions.create_session(user)
+    _set_session(response, token)
+    return user.public()
+
+
+@app.post("/api/auth/logout")
+def auth_logout(response: Response, wb_sid: str | None = Cookie(default=None)):
+    sessions.drop_session(wb_sid)
+    response.delete_cookie(sessions.COOKIE_NAME, path="/")
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+def auth_me(wb_sid: str | None = Cookie(default=None)):
+    user = sessions.get_user_by_session(wb_sid)
+    if not user:
+        raise HTTPException(401, "Sign in required")
+    return user.public()
+
+
+@app.post("/api/auth/role")
+def auth_role(body: dict, wb_sid: str | None = Cookie(default=None)):
+    user = _require_user(wb_sid)
+    role = str(body.get("role") or user.role)
+    updated = sessions.set_role(user, role)
+    return updated.public()
 
 
 @app.get("/api/sample-script")
@@ -77,13 +172,22 @@ def sample_script():
 
 
 @app.post("/api/productions")
-async def create_production(body: ProductionCreate):
-    return await start_production(body)
+async def create_production(body: ProductionCreate, wb_sid: str | None = Cookie(default=None)):
+    user = _require_user(wb_sid)
+    if user.role != "director":
+        raise HTTPException(403, "Only a director account can start a production")
+    return await start_production(body, owner_id=user.id, owner_email=user.email)
 
 
 @app.get("/api/productions")
-def productions():
-    return [public_production(p) for p in list_productions()]
+def productions(wb_sid: str | None = Cookie(default=None)):
+    user = _require_user(wb_sid)
+    items = list_productions()
+    if user.role == "director":
+        visible = [p for p in items if p.owner_id in {"", user.id} or p.published or p.status == "complete"]
+    else:
+        visible = [p for p in items if p.status == "complete" or p.published]
+    return [public_production(p) for p in visible]
 
 
 def _file_url(path: str) -> str:
@@ -112,7 +216,8 @@ def public_production(prod: Production) -> dict:
 
 
 @app.get("/api/productions/{production_id}")
-def production(production_id: str):
+def production(production_id: str, wb_sid: str | None = Cookie(default=None)):
+    _require_user(wb_sid)
     prod = get_production(production_id)
     if not prod:
         raise HTTPException(404, "Unknown production")
@@ -120,8 +225,9 @@ def production(production_id: str):
 
 
 @app.get("/api/productions/{production_id}/timeline")
-def production_timeline(production_id: str):
+def production_timeline(production_id: str, wb_sid: str | None = Cookie(default=None)):
     """Return one timing contract for visuals, narration, and captions."""
+    _require_user(wb_sid)
     prod = get_production(production_id)
     if not prod:
         raise HTTPException(404, "Unknown production")
@@ -243,15 +349,26 @@ def _cast_media_item(production_id: str, shot_id: str | None, fork_id: str | Non
 
 
 @app.get("/api/cast/media")
-def cast_media(production_id: str, shot_id: str | None = None, fork_id: str | None = None):
+def cast_media(
+    production_id: str,
+    shot_id: str | None = None,
+    fork_id: str | None = None,
+    wb_sid: str | None = Cookie(default=None),
+):
     """Resolve one CineGraph scene or fan branch for the Cast sender."""
+    _require_user(wb_sid)
     if shot_id and fork_id:
         raise HTTPException(400, "Choose a canonical scene or a fan branch, not both")
     return _cast_media_item(production_id, shot_id, fork_id)
 
 
 @app.get("/api/forks")
-def forks_list(production_id: str | None = None, limit: int = 50):
+def forks_list(
+    production_id: str | None = None,
+    limit: int = Query(default=50, ge=1, le=100),
+    wb_sid: str | None = Cookie(default=None),
+):
+    _require_user(wb_sid)
     forks = list_forks(production_id, limit)
     for fork in forks:
         if fork.get("media_path"):
@@ -275,8 +392,13 @@ def _resolve_shot(prod: Production, shot_id: str | None) -> Shot:
 
 
 @app.get("/api/productions/{production_id}/branches")
-def production_branches(production_id: str, shot_id: str | None = None):
+def production_branches(
+    production_id: str,
+    shot_id: str | None = None,
+    wb_sid: str | None = Cookie(default=None),
+):
     """What the Watch Buddy whispers: a few ways this scene could end."""
+    _require_user(wb_sid)
     prod = get_production(production_id)
     if not prod:
         raise HTTPException(404, "Unknown production")
@@ -289,35 +411,63 @@ def production_branches(production_id: str, shot_id: str | None = None):
     }
 
 
-@app.post("/api/forks")
-def create_fork(body: ForkRequest):
-    """Mint a viewer-requested alternate ending through the adherence loop."""
+@app.post("/api/forks", status_code=202)
+async def create_fork(body: ForkRequest, wb_sid: str | None = Cookie(default=None)):
+    _require_user(wb_sid)
     prod = get_production(body.production_id)
     if not prod:
         raise HTTPException(404, "Unknown production")
     shot = _resolve_shot(prod, body.shot_id)
+    job = ForkJob(job_id=new_id("fj_"), status="queued")
+    _fork_jobs[job.job_id] = job
 
-    fork = generate_fork(
-        production_id=prod.id,
-        title=prod.title,
-        parent_shot=shot,
-        viewer_prompt=body.viewer_prompt,
-        branch_label=body.branch_label or body.viewer_prompt[:32],
-        origin=body.origin,
-        max_iters=body.max_loop_iters,
-        whisper_lang=body.whisper_lang,
-    )
-    insert_fork(fork)
+    async def _run() -> None:
+        job.status = "running"
 
-    data = fork.model_dump()
-    data["media_path"] = _file_url(fork.media_path)
-    data["poster_path"] = _file_url(fork.poster_path)
-    data["whisper_audio_path"] = _file_url(fork.whisper_audio_path)
-    return data
+        def _mint() -> Fork:
+            set_production_id(prod.id)
+            return generate_fork(
+                production_id=prod.id,
+                title=prod.title,
+                parent_shot=shot,
+                viewer_prompt=body.viewer_prompt,
+                branch_label=body.branch_label or body.viewer_prompt[:32],
+                max_iters=body.max_loop_iters,
+                whisper_lang=body.whisper_lang,
+            )
+
+        try:
+            fork = await asyncio.to_thread(_mint)
+            job.persisted = insert_fork(fork)
+            job.fork = fork
+            job.status = "complete"
+        except Exception as exc:
+            job.status = "failed"
+            job.error = str(exc)[:400]
+
+    asyncio.create_task(_run())
+    return job.model_dump()
+
+
+@app.get("/api/fork-jobs/{job_id}")
+def fork_job(job_id: str, wb_sid: str | None = Cookie(default=None)):
+    _require_user(wb_sid)
+    job = _fork_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "Unknown fork job")
+    payload = job.model_dump()
+    if job.fork:
+        data = job.fork.model_dump()
+        data["media_path"] = _file_url(job.fork.media_path)
+        data["poster_path"] = _file_url(job.fork.poster_path)
+        data["whisper_audio_path"] = _file_url(job.fork.whisper_audio_path)
+        payload["fork"] = data
+    return payload
 
 
 @app.post("/api/assets/search")
-def assets_search(body: AssetSearchQuery):
+def assets_search(body: AssetSearchQuery, wb_sid: str | None = Cookie(default=None)):
+    _require_user(wb_sid)
     vec, source = embed_text(body.query)
     hits = search_assets(vec, body.production_id, body.limit)
     for hit in hits:

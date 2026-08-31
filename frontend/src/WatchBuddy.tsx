@@ -343,7 +343,6 @@ export default function WatchBuddy({ prod }: Props) {
         shot_id: current.shot_id,
         viewer_prompt: prompt,
         branch_label: label,
-        origin: "fan",
       });
       setFork(minted);
       setPlaying(true);
